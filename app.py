@@ -1172,40 +1172,53 @@ def process_large_file(file_path, model_name, language, translation_target,
             audio_chunks_dir = os.path.join(tempfile.gettempdir(), f'audio_chunks_{process_id}')
             os.makedirs(audio_chunks_dir, exist_ok=True)
             
-            # Extrage audio în chunks de 10 minute
-            chunk_duration = 600  # 10 minute în secunde
+            # Extrage audio complet o singură dată ca MP3 (economie de spațiu)
+            full_audio_path = os.path.join(audio_chunks_dir, 'full_audio.mp3')
+            print(f"Extrag audio complet: {full_audio_path}")
             
             try:
-                # Obține durata totală a fișierului
+                extract_cmd = [
+                    'ffmpeg',
+                    '-i', file_path,
+                    '-vn',
+                    '-acodec', 'libmp3lame',
+                    '-q:a', '2',
+                    '-loglevel', 'error',
+                    '-y',
+                    full_audio_path
+                ]
+                subprocess.run(extract_cmd, check=True)
+
+                # Obține durata folosind ffprobe pe fișierul audio
                 probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                           '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
+                           '-of', 'default=noprint_wrappers=1:nokey=1', full_audio_path]
                 result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
                 duration = float(result.stdout.strip())
                 
+                # Chunks de 10 minute
+                chunk_duration = 600
                 total_chunks = math.ceil(duration / chunk_duration)
                 
                 print(f"Durata totală: {duration:.1f}s, Chunks: {total_chunks}")
                 
                 all_segments = []
                 
-                # Procesează fiecare chunk
+                # Procesează fiecare chunk din fișierul audio extras
                 for chunk_idx in range(total_chunks):
-                    start_time = chunk_idx * chunk_duration
-                    end_time = min((chunk_idx + 1) * chunk_duration, duration)
+                    start_chunk = chunk_idx * chunk_duration
+                    length_chunk = min(chunk_duration, duration - start_chunk)
                     
-                    print(f"Procesez chunk {chunk_idx + 1}/{total_chunks} ({start_time:.1f}s - {end_time:.1f}s)")
+                    print(f"Procesez chunk {chunk_idx + 1}/{total_chunks} ({start_chunk:.1f}s - {start_chunk + length_chunk:.1f}s)")
                     
-                    # Extrage audio chunk
-                    audio_chunk_path = os.path.join(audio_chunks_dir, f'chunk_{chunk_idx:03d}.wav')
+                    # Extrage audio chunk ca MP3
+                    audio_chunk_path = os.path.join(audio_chunks_dir, f'chunk_{chunk_idx:03d}.mp3')
                     
                     cmd = [
                         'ffmpeg',
-                        '-i', file_path,
-                        '-ss', str(start_time),
-                        '-t', str(end_time - start_time),
-                        '-acodec', 'pcm_s16le',
-                        '-ac', '1',
-                        '-ar', '16000',
+                        '-i', full_audio_path,
+                        '-ss', str(start_chunk),
+                        '-t', str(length_chunk),
+                        '-acodec', 'copy',
                         '-loglevel', 'error',
                         '-y',
                         audio_chunk_path
@@ -1229,8 +1242,8 @@ def process_large_file(file_path, model_name, language, translation_target,
                             
                             # Ajustează timecode-urile pentru chunk-ul curent
                             for segment in result.get('segments', []):
-                                segment['start'] += start_time
-                                segment['end'] += start_time
+                                segment['start'] += start_chunk
+                                segment['end'] += start_chunk
                                 all_segments.append(segment)
                         except Exception as e:
                             print(f"Eroare la transcrierea chunk-ului {chunk_idx}: {str(e)}")
@@ -1245,6 +1258,18 @@ def process_large_file(file_path, model_name, language, translation_target,
                 # Procesează segmentele combinate
                 segments = all_segments
                 
+                # Calculăm un timp total estimat (sumă de durate chunks sau ultima dată)
+                transcribe_time = time.time() - start_time
+
+                return {
+                    'result': {
+                        'text': " ".join([s['text'] for s in segments]),
+                        'language': language if language != 'auto' else result.get('language', 'unknown')
+                    },
+                    'segments': segments,
+                    'transcribe_time': transcribe_time
+                }
+
             except Exception as e:
                 print(f"Eroare la procesarea în chunks: {str(e)}")
                 # Fallback la procesare normală
@@ -1707,13 +1732,13 @@ def set_model():
         if model_name in AVAILABLE_MODELS:
             session['selected_model'] = model_name
             
-            def load_in_background():
+            def load_in_background(m_name):
                 try:
-                    load_model(model_name)
+                    load_model(m_name)
                 except Exception as e:
-                    print(f"Eroare la încărcarea în background a modelului {model_name}: {str(e)}")
+                    print(f"Eroare la încărcarea în background a modelului {m_name}: {str(e)}")
             
-            thread = threading.Thread(target=load_in_background)
+            thread = threading.Thread(target=load_in_background, args=(model_name,))
             thread.daemon = True
             thread.start()
             
@@ -1762,15 +1787,16 @@ def set_translation_target():
         elif target_language in TRANSLATION_LANGUAGES:
             session['translation_target'] = target_language
             
-            def load_translation_background():
+            current_lang = session.get('selected_language', 'auto')
+
+            def load_translation_background(src, tgt):
                 try:
-                    current_lang = session.get('selected_language', 'auto')
-                    if current_lang != 'auto':
-                        load_translation_model(current_lang, target_language)
+                    if src != 'auto':
+                        load_translation_model(src, tgt)
                 except Exception as e:
                     print(f"Eroare la încărcarea modelului de traducere: {str(e)}")
             
-            thread = threading.Thread(target=load_translation_background)
+            thread = threading.Thread(target=load_translation_background, args=(current_lang, target_language))
             thread.daemon = True
             thread.start()
             
