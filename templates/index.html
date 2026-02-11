@@ -1544,6 +1544,11 @@
                     <label for="adjustSegmentation">Ajustare automată segmentare pentru subtitrări</label>
                 </div>
                 
+                <div class="checkbox-group">
+                    <input type="checkbox" id="extractAudioOnlyCheckbox">
+                    <label for="extractAudioOnlyCheckbox">Doar extragere audio (fără transcriere)</label>
+                </div>
+
                 <div class="segmentation-controls" id="segmentationControls">
                     <div class="control-group">
                         <label>
@@ -1724,9 +1729,21 @@
         
         <!-- Results -->
         <div class="result-container" id="resultContainer">
-            <h2><i class="fas fa-check-circle"></i> Transcriere finalizată!</h2>
+            <h2 id="resultTitle"><i class="fas fa-check-circle"></i> Transcriere finalizată!</h2>
             
-            <!-- Translation Toggle in Results -->
+            <div id="audioOnlyResult" style="display: none; text-align: center; margin: 20px 0;">
+                <div class="info-card" style="display: inline-block; margin-bottom: 20px;">
+                    <p><i class="fas fa-volume-up"></i> Audio-ul a fost extras cu succes. Fișierul video original a fost șters pentru a economisi spațiu.</p>
+                </div>
+                <div class="button-group">
+                    <a id="audioDownloadLink" href="#" class="btn download-btn">
+                        <i class="fas fa-download"></i> Descarcă Audio (MP3)
+                    </a>
+                </div>
+            </div>
+
+            <div id="transcriptionResult">
+                <!-- Translation Toggle in Results -->
             <div style="margin: 15px 0; display: flex; justify-content: center; gap: 10px;">
                 <button class="segment-translation-toggle" id="toggleSegmentsTranslation" onclick="toggleSegmentsTranslation()">
                     <i class="fas fa-language"></i> Afișează Traducerea
@@ -1744,7 +1761,10 @@
             <h3><i class="fas fa-list"></i> Segmente cu timecode:</h3>
             <div class="segments" id="segmentsList"></div>
             
-            <div class="button-group">
+            <div id="transcriptionButtons" class="button-group">
+                <button class="btn" id="saveEditsBtn" onclick="saveEdits()" style="background: #805ad5;">
+                    <i class="fas fa-save"></i> Salvează Modificările
+                </button>
                 <button class="btn download-btn" onclick="downloadSRT()">
                     <i class="fas fa-download"></i> Descarcă Fișier SRT
                 </button>
@@ -1821,6 +1841,7 @@
         const modelGrid = document.getElementById('modelGrid');
         const languageSelect = document.getElementById('languageSelect');
         const adjustSegmentationCheckbox = document.getElementById('adjustSegmentation');
+        const extractAudioOnlyCheckbox = document.getElementById('extractAudioOnlyCheckbox');
         const segmentationControls = document.getElementById('segmentationControls');
         const minDurationSlider = document.getElementById('minDuration');
         const maxDurationSlider = document.getElementById('maxDuration');
@@ -1874,6 +1895,7 @@
         const newTranslationSelect = document.getElementById('newTranslationSelect');
         const addTranslationBtn = document.getElementById('addTranslationBtn');
         const showMultipleTranslationsBtn = document.getElementById('showMultipleTranslationsBtn');
+        const saveEditsBtn = document.getElementById('saveEditsBtn');
         
         // Elemente pentru upload segmentat
         const simpleUploadBtn = document.getElementById('simpleUploadBtn');
@@ -1955,34 +1977,66 @@
         // Restaurează sesiunea anterioară
         async function restoreSession(pid) {
             try {
-                showToast('Se restaurează sesiunea anterioară...', 'info');
-
                 const response = await fetch(`/segments_json/${pid}/original_segments.json`);
                 if (!response.ok) return;
 
                 const data = await response.json();
                 if (data.segments) {
+                    showToast('Se restaurează sesiunea anterioară...', 'info');
                     originalSegments = data.segments;
                     currentSegments = data.segments;
                     processId = pid;
 
-                    // Încearcă să găsești și fișierul SRT original
+                    // Încearcă să obțină starea completă de la server
                     const statusResp = await fetch('/get_existing_translations');
                     const statusData = await statusResp.json();
 
                     if (statusData.success) {
                         infoLanguage.textContent = statusData.detected_language;
+                        infoModel.textContent = "Restaurat";
+                        infoTime.textContent = "-";
+
+                        // Caută fișierul SRT principal
+                        if (statusData.translations && statusData.translations.length > 0) {
+                            // ...
+                        }
+
+                        // Căutăm orice fișier SRT în directorul procesului pentru a activa descărcarea
+                        // Deocamdată activăm descărcarea generală
+                        srtFilename = "transcription.srt"; // Fallback name
+
                         displaySegments(originalSegments);
                         resultContainer.style.display = 'block';
+                        processingInfo.style.display = 'block';
                         showMultipleTranslationsBtn.style.display = 'inline-flex';
 
-                        // Caută dacă există vreo traducere activă anterior
+                        // Actualizează lista de traduceri
                         refreshTranslationsList();
+
+                        // Verifică dacă există video pentru preview
+                        checkVideoExists(pid);
                     }
                 }
             } catch (error) {
                 console.error('Eroare la restaurarea sesiunii:', error);
             }
+        }
+
+        // Verifică dacă există un fișier video pentru preview
+        async function checkVideoExists(pid) {
+            try {
+                const resp = await fetch(`/check_video/${pid}`);
+                const data = await resp.json();
+                if (data.success && data.video_url) {
+                    videoPreview.src = data.video_url;
+                    videoPreview.style.display = 'block';
+                    videoPreviewContainer.style.display = 'block';
+                    videoDuration = data.duration || 0;
+                    totalTimeElement.textContent = formatTime(videoDuration);
+                    playWithSubtitlesBtn.style.display = 'inline-flex';
+                    showToast('Preview video restaurat', 'success');
+                }
+            } catch (e) {}
         }
         
         // Selectează metoda de upload
@@ -2735,6 +2789,7 @@
             formData.append('language', currentLanguage);
             formData.append('translation_target', translationTarget || '');
             formData.append('adjust_segmentation', adjustSegmentationCheckbox.checked);
+            formData.append('extract_audio_only', extractAudioOnlyCheckbox.checked);
             
             try {
                 updateProgress(10, 'Se încarcă fișierul...');
@@ -2990,7 +3045,8 @@
                         model: currentModel,
                         language: currentLanguage,
                         translation_target: translationTarget || '',
-                        adjust_segmentation: adjustSegmentationCheckbox.checked
+                        adjust_segmentation: adjustSegmentationCheckbox.checked,
+                        extract_audio_only: extractAudioOnlyCheckbox.checked
                     })
                 });
                 
@@ -3020,13 +3076,39 @@
         }
         
         function extractAudioOnly() {
-            showToast('Funcționalitatea de extragere audio va fi implementată în curând', 'info');
+            extractAudioOnlyCheckbox.checked = true;
+            if (selectedFile && selectedFile.size > maxSimpleSize) {
+                switchToChunkedUpload();
+            }
+            showToast('S-a activat modul "Doar extragere audio". Click pe Start.', 'info');
         }
         
         // Procesează rezultatul
         function handleProcessingResult(data) {
             updateProgress(100, 'Finalizare...');
             
+            if (data.audio_only) {
+                loading.style.display = 'none';
+                progressContainer.style.display = 'none';
+                chunkedUploadProgress.style.display = 'none';
+
+                document.getElementById('resultTitle').innerHTML = '<i class="fas fa-check-circle"></i> Audio extras!';
+                document.getElementById('audioOnlyResult').style.display = 'block';
+                document.getElementById('transcriptionResult').style.display = 'none';
+                document.getElementById('transcriptionButtons').style.display = 'none';
+                document.getElementById('audioDownloadLink').href = `/download/${data.process_id}/${data.audio_filename}`;
+
+                resultContainer.style.display = 'block';
+                showToast('Audio extras cu succes!', 'success');
+                return;
+            }
+
+            // Re-asigură-te că vedem transcrierea
+            document.getElementById('resultTitle').innerHTML = '<i class="fas fa-check-circle"></i> Transcriere finalizată!';
+            document.getElementById('audioOnlyResult').style.display = 'none';
+            document.getElementById('transcriptionResult').style.display = 'block';
+            document.getElementById('transcriptionButtons').style.display = 'flex';
+
             if (translationEnabled && data.is_translated) {
                 updateTranslationProgress(100, 'Traducere completă!');
             }
@@ -3135,6 +3217,60 @@
         // Restul funcțiilor rămân la fel (displaySegments, toggleSegmentsTranslation, etc.)
         // ... (codul rămas este identic cu cel din versiunea anterioară)
         
+        // Actualizează textul segmentului în memoria locală
+        function updateSegmentLocal(id, newText) {
+            const segment = currentSegments.find(s => s.id === id);
+            if (segment) {
+                segment.text = newText;
+            }
+        }
+
+        // Salvează modificările pe server
+        async function saveEdits() {
+            if (!processId || !currentSegments.length) {
+                showToast('Nu există date de salvat', 'warning');
+                return;
+            }
+
+            saveEditsBtn.disabled = true;
+            const originalContent = saveEditsBtn.innerHTML;
+            saveEditsBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Se salvează...';
+
+            try {
+                const response = await fetch('/api/save_edits', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        process_id: processId,
+                        segments: currentSegments,
+                        is_translated: !!currentTranslationLang,
+                        target_lang: currentTranslationLang
+                    })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    showToast('Modificările au fost salvate cu succes!', 'success');
+                    if (data.srt_filename) {
+                        if (currentTranslationLang) {
+                            translatedSrtFilename = data.srt_filename;
+                        } else {
+                            srtFilename = data.srt_filename;
+                        }
+                    }
+                } else {
+                    throw new Error(data.error || 'Eroare la salvare');
+                }
+            } catch (error) {
+                console.error('Eroare la salvarea modificărilor:', error);
+                showError(`Eroare la salvare: ${error.message}`);
+                showToast('Eroare la salvare', 'error');
+            } finally {
+                saveEditsBtn.disabled = false;
+                saveEditsBtn.innerHTML = originalContent;
+            }
+        }
+
         // Afișează segmentele
         function displaySegments(segments) {
             let segmentsHtml = '';
@@ -3151,7 +3287,7 @@
                             <span><i class="far fa-clock"></i> ${segment.start_formatted} → ${segment.end_formatted}</span>
                             ${isTranslated ? `<span class="language-badge target">${targetLang}</span>` : ''}
                         </div>
-                        <div class="segment-text">${segment.text}</div>
+                        <div class="segment-text" contenteditable="true" onblur="updateSegmentLocal(${segment.id}, this.innerText)">${segment.text}</div>
                         ${isTranslated ? `
                             <div class="segment-translation">
                                 <div class="segment-translation-header">
@@ -3172,11 +3308,15 @@
             showTranslatedSegments = !showTranslatedSegments;
             
             if (showTranslatedSegments && translatedSegments.length > 0) {
+                currentSegments = translatedSegments;
+                currentTranslationLang = translationTarget; // sau limba țintă curentă
                 displaySegments(translatedSegments);
                 toggleSegmentsTranslationBtn.innerHTML = '<i class="fas fa-language"></i> Afișează Original';
                 toggleSegmentsTranslationBtn.classList.add('active');
                 showToast('Afișează segmente traduse', 'info');
             } else {
+                currentSegments = originalSegments;
+                currentTranslationLang = null;
                 displaySegments(originalSegments);
                 toggleSegmentsTranslationBtn.innerHTML = '<i class="fas fa-language"></i> Afișează Traducerea';
                 toggleSegmentsTranslationBtn.classList.remove('active');
@@ -3624,6 +3764,10 @@
             toggleSegmentsTranslationBtn.classList.remove('active');
             toggleSegmentsTranslationBtn.style.display = 'none';
             downloadTranslatedBtn.style.display = 'none';
+            document.getElementById('audioOnlyResult').style.display = 'none';
+            document.getElementById('transcriptionResult').style.display = 'block';
+            document.getElementById('transcriptionButtons').style.display = 'flex';
+            document.getElementById('resultTitle').innerHTML = '<i class="fas fa-check-circle"></i> Transcriere finalizată!';
             mainDownloadTranslatedBtn.style.display = 'none';
             showMultipleTranslationsBtn.style.display = 'inline-flex';
             

@@ -170,8 +170,8 @@ def get_process_dir(process_id):
     """Returnează calea către directorul procesului (sanitizat)"""
     if not process_id:
         return None
-    # Sanitize process_id to prevent path traversal
-    safe_id = "".join([c for c in str(process_id) if c.isalnum()])
+    # Sanitize process_id to prevent path traversal, allowing hyphens for UUIDs
+    safe_id = "".join([c for c in str(process_id) if c.isalnum() or c == '-'])
     if not safe_id:
         return None
     return os.path.join(app.config['UPLOAD_FOLDER'], f'process_{safe_id}')
@@ -1018,7 +1018,24 @@ def adjust_segmentation_algorithm(segments, min_duration=1.0, max_duration=5.0, 
         else:
             adjusted_segments.append(segment)
     
-    return adjusted_segments
+    # Aplicăm padding-ul de sincronizare
+    return apply_timing_padding(adjusted_segments)
+
+def apply_timing_padding(segments, max_padding=1.5):
+    """Extinde finalul segmentelor până la următorul segment pentru o mai bună sincronizare"""
+    if not segments:
+        return segments
+
+    for i in range(len(segments) - 1):
+        current_end = segments[i]['end']
+        next_start = segments[i+1]['start']
+
+        if next_start > current_end:
+            gap = next_start - current_end
+            padding = min(gap, max_padding)
+            segments[i]['end'] = current_end + padding
+
+    return segments
 
 # ============================================================================
 # FUNCȚII PENTRU UPLOAD SEGMENTAT
@@ -1135,7 +1152,7 @@ def cleanup_upload_session(session_id):
             del upload_sessions[session_id]
 
 def process_large_file(file_path, model_name, language, translation_target, 
-                      should_adjust_segmentation, process_id):
+                      should_adjust_segmentation, process_id, extract_audio_only=False):
     """Procesează un fișier mare folosind tehnici optimizate"""
     print(f"Procesez fișierul mare: {file_path}")
     print(f"Dimensiune: {os.path.getsize(file_path) / (1024*1024*1024):.2f} GB")
@@ -1168,12 +1185,13 @@ def process_large_file(file_path, model_name, language, translation_target,
         if file_size > 1 * 1024 * 1024 * 1024:  # >1GB
             print("Fișier foarte mare detectat (>1GB), folosesc procesare în chunks...")
             
-            # Creează un director temporar pentru chunk-urile audio
-            audio_chunks_dir = os.path.join(tempfile.gettempdir(), f'audio_chunks_{process_id}')
+            # Creează un director temporar pentru chunk-urile audio în interiorul directorului procesului
+            process_dir = get_process_dir(process_id)
+            audio_chunks_dir = os.path.join(process_dir, 'audio_chunks')
             os.makedirs(audio_chunks_dir, exist_ok=True)
             
             # Extrage audio complet o singură dată ca MP3 (economie de spațiu)
-            full_audio_path = os.path.join(audio_chunks_dir, 'full_audio.mp3')
+            full_audio_path = os.path.join(process_dir, 'full_audio.mp3')
             print(f"Extrag audio complet: {full_audio_path}")
             
             try:
@@ -1189,6 +1207,16 @@ def process_large_file(file_path, model_name, language, translation_target,
                 ]
                 subprocess.run(extract_cmd, check=True)
 
+                if extract_audio_only:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    return {
+                        'success': True,
+                        'audio_only': True,
+                        'audio_file': "full_audio.mp3",
+                        'message': 'Audio extras cu succes'
+                    }
+
                 # Obține durata folosind ffprobe pe fișierul audio
                 probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
                            '-of', 'default=noprint_wrappers=1:nokey=1', full_audio_path]
@@ -1202,12 +1230,17 @@ def process_large_file(file_path, model_name, language, translation_target,
                 print(f"Durata totală: {duration:.1f}s, Chunks: {total_chunks}")
                 
                 all_segments = []
+                last_chunk_result = {'text': '', 'language': 'unknown'}
                 
                 # Procesează fiecare chunk din fișierul audio extras
                 for chunk_idx in range(total_chunks):
                     start_chunk = chunk_idx * chunk_duration
                     length_chunk = min(chunk_duration, duration - start_chunk)
                     
+                    # Evită chunk-uri insignifiante
+                    if length_chunk < 0.1:
+                        continue
+
                     print(f"Procesez chunk {chunk_idx + 1}/{total_chunks} ({start_chunk:.1f}s - {start_chunk + length_chunk:.1f}s)")
                     
                     # Extrage audio chunk ca MP3
@@ -1239,6 +1272,7 @@ def process_large_file(file_path, model_name, language, translation_target,
                         
                         try:
                             result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
+                            last_chunk_result = result
                             
                             # Ajustează timecode-urile pentru chunk-ul curent
                             for segment in result.get('segments', []):
@@ -1256,15 +1290,20 @@ def process_large_file(file_path, model_name, language, translation_target,
                 shutil.rmtree(audio_chunks_dir, ignore_errors=True)
                 
                 # Procesează segmentele combinate
-                segments = all_segments
-                
+                segments = sorted(all_segments, key=lambda x: x['start'])
+
+                if should_adjust_segmentation:
+                    segments = adjust_segmentation_algorithm(segments)
+                else:
+                    segments = apply_timing_padding(segments)
+
                 # Calculăm un timp total estimat (sumă de durate chunks sau ultima dată)
                 transcribe_time = time.time() - start_time
 
                 return {
                     'result': {
                         'text': " ".join([s['text'] for s in segments]),
-                        'language': language if language != 'auto' else result.get('language', 'unknown')
+                        'language': language if language != 'auto' else last_chunk_result.get('language', 'unknown')
                     },
                     'segments': segments,
                     'transcribe_time': transcribe_time
@@ -1287,25 +1326,48 @@ def process_large_file(file_path, model_name, language, translation_target,
         raise
 
 def process_normal_file(file_path, model, device, language, translation_target,
-                       should_adjust_segmentation, process_id, is_video, is_mp4):
+                       should_adjust_segmentation, process_id, is_video, is_mp4, extract_audio_only=False):
     """Procesează un fișier folosind metoda normală"""
     audio_path = file_path
     
     # Încearcă să extragă audio dacă este video
     if is_video:
-        print("Încerc să extrag audio din fișier video pentru transcriere...")
+        print("Încerc să extrag audio din fișier video...")
         try:
-            audio_path = convert_to_wav(file_path)
+            if extract_audio_only:
+                audio_path = os.path.join(os.path.dirname(file_path), "extracted_audio.mp3")
+                ffmpeg_cmd = [
+                    'ffmpeg', '-y', '-i', file_path,
+                    '-vn', '-acodec', 'libmp3lame', '-q:a', '2',
+                    audio_path
+                ]
+                subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+            else:
+                audio_path = convert_to_wav(file_path)
+
             if audio_path == "ERROR: NO_AUDIO":
                 raise ValueError("Fișierul nu conține niciun stream audio.")
-            print("✓ Audio extras cu succes pentru transcriere")
+            print("✓ Audio extras cu succes")
+
+            if extract_audio_only:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                return {
+                    'success': True,
+                    'audio_only': True,
+                    'audio_file': os.path.basename(audio_path),
+                    'message': 'Audio extras cu succes'
+                }
         except ValueError as ve:
             # Re-aruncăm eroarea de lipsă audio pentru a fi raportată corect
             raise ve
         except Exception as e:
             print(f"Eroare la extragerea audio: {e}")
-            # Folosește fișierul original ca fallback
-            print("Folosesc fișierul original pentru transcriere...")
+            if not extract_audio_only:
+                # Folosește fișierul original ca fallback pentru transcriere
+                print("Folosesc fișierul original pentru transcriere...")
+            else:
+                raise Exception(f"Eșec la extragerea audio: {str(e)}")
     
     # Transcriere
     print(f"Încep transcrierea pe {device}...")
@@ -1357,6 +1419,8 @@ def process_normal_file(file_path, model, device, language, translation_target,
             max_duration=settings['max_duration'],
             max_chars=settings['max_chars']
         )
+    else:
+        segments = apply_timing_padding(segments)
     
     return {
         'result': result,
@@ -1515,6 +1579,7 @@ def chunk_upload_process(session_id):
         language = data.get('language', session.get('selected_language', 'auto'))
         translation_target = data.get('translation_target', session.get('translation_target', None))
         should_adjust_segmentation = data.get('adjust_segmentation', True)
+        extract_audio_only = data.get('extract_audio_only', False)
         
         if model_name not in AVAILABLE_MODELS:
             model_name = DEFAULT_MODEL
@@ -1534,12 +1599,24 @@ def chunk_upload_process(session_id):
             # Procesează fișierul (folosește funcția pentru fișiere mari)
             process_result = process_large_file(
                 original_path, model_name, language, translation_target,
-                should_adjust_segmentation, process_id
+                should_adjust_segmentation, process_id, extract_audio_only
             )
             
-            result = process_result['result']
-            segments = process_result['segments']
-            transcribe_time = process_result['transcribe_time']
+            if process_result is None:
+                return jsonify({'error': 'Procesarea fișierului a eșuat'}), 500
+
+            if process_result.get('audio_only'):
+                return jsonify({
+                    'success': True,
+                    'audio_only': True,
+                    'process_id': process_id,
+                    'audio_filename': process_result.get('audio_file'),
+                    'message': 'Audio extras cu succes'
+                })
+
+            result = process_result.get('result', {})
+            segments = process_result.get('segments', [])
+            transcribe_time = process_result.get('transcribe_time', 0)
             
             detected_language = result.get('language', 'unknown')
             
@@ -1949,6 +2026,7 @@ def upload_file():
     language = request.form.get('language', session.get('selected_language', 'auto'))
     translation_target = request.form.get('translation_target', session.get('translation_target', None))
     should_adjust_segmentation = request.form.get('adjust_segmentation', 'true').lower() == 'true'
+    extract_audio_only = request.form.get('extract_audio_only', 'false').lower() == 'true'
     
     if model_name not in AVAILABLE_MODELS:
         model_name = DEFAULT_MODEL
@@ -1983,12 +2061,24 @@ def upload_file():
         
         process_result = process_normal_file(
             original_path, model, device, language, translation_target,
-            should_adjust_segmentation, process_id, is_video, is_mp4
+            should_adjust_segmentation, process_id, is_video, is_mp4, extract_audio_only
         )
         
-        result = process_result['result']
-        segments = process_result['segments']
-        transcribe_time = process_result['transcribe_time']
+        if process_result is None:
+            return jsonify({'error': 'Procesarea fișierului a eșuat'}), 500
+
+        if process_result.get('audio_only'):
+            return jsonify({
+                'success': True,
+                'audio_only': True,
+                'process_id': process_id,
+                'audio_filename': process_result.get('audio_file'),
+                'message': 'Audio extras cu succes'
+            })
+
+        result = process_result.get('result', {})
+        segments = process_result.get('segments', [])
+        transcribe_time = process_result.get('transcribe_time', 0)
         
         detected_language = result.get('language', 'unknown')
         
@@ -2142,6 +2232,100 @@ def upload_file():
         import traceback
         print(f"Eroare la upload simplu: {traceback.format_exc()}")
         return jsonify({'error': f'Eroare la procesare: {str(e)}'}), 500
+
+@app.route('/api/save_edits', methods=['POST'])
+def save_edits():
+    """Salvează modificările aduse segmentelor de către utilizator"""
+    data = request.get_json()
+    process_id = data.get('process_id')
+    segments = data.get('segments')
+    is_translated = data.get('is_translated', False)
+    target_lang = data.get('target_lang', None)
+
+    if not process_id or not segments:
+        return jsonify({'error': 'Date lipsă'}), 400
+
+    try:
+        # Salvează segmentele în fișierul JSON corespunzător
+        if is_translated and target_lang:
+            save_segments_to_disk(process_id, segments, target_lang, is_original=False)
+        else:
+            save_segments_to_disk(process_id, segments, None, is_original=True)
+
+        # Căutăm fișierul SRT existent în director
+        process_dir = get_process_dir(process_id)
+        srt_filename = None
+
+        if is_translated and target_lang:
+            # Căutăm un fișier SRT care conține codul limbii
+            for f in os.listdir(process_dir):
+                if f.endswith('.srt') and f'_{target_lang}.srt' in f:
+                    srt_filename = f
+                    break
+        else:
+            # Căutăm fișierul SRT principal
+            for f in os.listdir(process_dir):
+                if f.endswith('.srt') and not any(f'_{lang}.srt' in f for lang in TRANSLATION_LANGUAGES):
+                    srt_filename = f
+                    break
+
+        if srt_filename:
+            srt_path = os.path.join(process_dir, srt_filename)
+            write_srt(segments, srt_path)
+
+        return jsonify({
+            'success': True,
+            'message': 'Modificări salvate cu succes',
+            'srt_filename': srt_filename
+        })
+
+    except Exception as e:
+        print(f"Eroare la salvarea modificărilor: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/check_video/<process_id>')
+def check_video(process_id):
+    """Verifică dacă există un fișier video pentru preview în directorul procesului"""
+    process_dir = get_process_dir(process_id)
+    if not os.path.exists(process_dir):
+        return jsonify({'success': False})
+
+    # Caută fișiere video (prioritate MP4)
+    files = os.listdir(process_dir)
+    video_file = None
+
+    # Prioritate: video.mp4 (cel convertit) apoi orice alt mp4
+    if 'video.mp4' in files:
+        video_file = 'video.mp4'
+    else:
+        for f in files:
+            if f.lower().endswith('.mp4'):
+                video_file = f
+                break
+
+    if not video_file:
+        for f in files:
+            if any(f.lower().endswith(ext) for ext in ['.webm', '.ogg', '.mov']):
+                video_file = f
+                break
+
+    if video_file:
+        duration = 0
+        try:
+            probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                       '-of', 'default=noprint_wrappers=1:nokey=1', os.path.join(process_dir, video_file)]
+            result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+            duration = float(result.stdout.strip())
+        except:
+            pass
+
+        return jsonify({
+            'success': True,
+            'video_url': f'/download/{process_id}/{video_file}',
+            'duration': duration
+        })
+
+    return jsonify({'success': False})
 
 @app.route('/download/<process_id>/<filename>')
 def download_file(process_id, filename):
@@ -2721,7 +2905,7 @@ if __name__ == '__main__':
     print(f"✓ Timeout procesare: {app.config['PROCESS_TIMEOUT']} secunde")
     
     # Încarcă modelul implicit
-    load_default_model_on_startup()
+    # load_default_model_on_startup()
     
     # Pornește aplicația
     print("\n" + "="*70)
