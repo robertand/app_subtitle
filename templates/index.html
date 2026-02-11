@@ -1942,8 +1942,48 @@
             // Afișează un mesaj de bun venit
             setTimeout(() => {
                 showToast(`Aplicația este gata! Upload: ${uploadMethod === 'simple' ? 'Simplu' : 'Segmentat'}`, 'success');
+
+                // Încearcă să restaurezi starea anterioară dacă există un processId în sesiune
+                const savedProcessId = '{{ session.get("process_id", "") }}';
+                if (savedProcessId) {
+                    processId = savedProcessId;
+                    restoreSession(processId);
+                }
             }, 1000);
         });
+
+        // Restaurează sesiunea anterioară
+        async function restoreSession(pid) {
+            try {
+                showToast('Se restaurează sesiunea anterioară...', 'info');
+
+                const response = await fetch(`/segments_json/${pid}/original_segments.json`);
+                if (!response.ok) return;
+
+                const data = await response.json();
+                if (data.segments) {
+                    originalSegments = data.segments;
+                    currentSegments = data.segments;
+                    processId = pid;
+
+                    // Încearcă să găsești și fișierul SRT original
+                    const statusResp = await fetch('/get_existing_translations');
+                    const statusData = await statusResp.json();
+
+                    if (statusData.success) {
+                        infoLanguage.textContent = statusData.detected_language;
+                        displaySegments(originalSegments);
+                        resultContainer.style.display = 'block';
+                        showMultipleTranslationsBtn.style.display = 'inline-flex';
+
+                        // Caută dacă există vreo traducere activă anterior
+                        refreshTranslationsList();
+                    }
+                }
+            } catch (error) {
+                console.error('Eroare la restaurarea sesiunii:', error);
+            }
+        }
         
         // Selectează metoda de upload
         function selectUploadMethod(method) {
@@ -3179,6 +3219,15 @@
                         
                         // Adaugă traducerile
                         data.translations.forEach(trans => {
+                            // Stocăm și numele fișierului SRT
+                            if (trans.srt_filename) {
+                                if (!multipleTranslations[trans.target_language]) {
+                                    multipleTranslations[trans.target_language] = { srt_filename: trans.srt_filename };
+                                } else {
+                                    multipleTranslations[trans.target_language].srt_filename = trans.srt_filename;
+                                }
+                            }
+
                             html += `
                                 <div class="translation-item ${currentTranslationLang === trans.target_language ? 'active' : ''}" 
                                      onclick="loadTranslation('${trans.target_language}')">
@@ -3206,17 +3255,49 @@
         }
         
         // Încarcă o traducere specifică
-        function loadTranslation(langCode) {
+        async function loadTranslation(langCode) {
             if (langCode === null) {
                 currentSegments = originalSegments;
                 currentTranslationLang = null;
                 displaySegments(originalSegments);
                 showToast('Se afișează segmentele originale', 'info');
-            } else if (multipleTranslations[langCode]) {
-                currentSegments = multipleTranslations[langCode];
-                currentTranslationLang = langCode;
-                displaySegments(multipleTranslations[langCode]);
-                showToast(`Se afișează traducerea în ${langCode}`, 'info');
+
+                downloadTranslatedBtn.style.display = 'none';
+                mainDownloadTranslatedBtn.style.display = 'none';
+            } else {
+                try {
+                    // Dacă nu avem segmentele în memorie (doar meta-datele de la refresh)
+                    if (!multipleTranslations[langCode] || !Array.isArray(multipleTranslations[langCode])) {
+                        showToast(`Se încarcă traducerea în ${langCode}...`, 'info');
+
+                        const filename = `translated_segments_${langCode}.json`;
+                        const response = await fetch(`/segments_json/${processId}/${filename}`);
+                        const data = await response.json();
+
+                        if (data.segments) {
+                            const srt_filename = multipleTranslations[langCode]?.srt_filename;
+                            multipleTranslations[langCode] = data.segments;
+                            if (srt_filename) multipleTranslations[langCode].srt_filename = srt_filename;
+                        } else {
+                            throw new Error('Nu s-au putut încărca segmentele');
+                        }
+                    }
+
+                    currentSegments = multipleTranslations[langCode];
+                    currentTranslationLang = langCode;
+
+                    if (multipleTranslations[langCode].srt_filename) {
+                        translatedSrtFilename = multipleTranslations[langCode].srt_filename;
+                        downloadTranslatedBtn.style.display = 'inline-flex';
+                        mainDownloadTranslatedBtn.style.display = 'inline-flex';
+                    }
+
+                    displaySegments(currentSegments);
+                    showToast(`Se afișează traducerea în ${langCode}`, 'info');
+                } catch (error) {
+                    console.error('Eroare la încărcarea traducerii:', error);
+                    showToast('Eroare la încărcarea traducerii de pe server', 'error');
+                }
             }
             
             refreshTranslationsList();
@@ -3272,10 +3353,15 @@
                 
                 if (data.success) {
                     multipleTranslations[targetLang] = data.segments;
+                    translatedSrtFilename = data.srt_filename;
                     loadTranslation(targetLang);
                     showToast(`Traducere în ${targetLang} completă! ${data.segment_count} segmente traduse`, 'success');
                     refreshTranslationsList();
                     
+                    // Afișează butoanele de descărcare pentru traducere
+                    downloadTranslatedBtn.style.display = 'inline-flex';
+                    mainDownloadTranslatedBtn.style.display = 'inline-flex';
+
                     setTimeout(() => {
                         showToast(`Fișierul ${data.srt_filename} a fost generat`, 'info');
                     }, 500);
