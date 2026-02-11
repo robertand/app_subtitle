@@ -3079,13 +3079,24 @@
         
         // Poll statusul task-ului
         async function pollTaskStatus(pid) {
+            console.log('Polling status for task:', pid);
             try {
                 const response = await fetch(`/api/task_status/${pid}`);
+                if (!response.ok) {
+                    console.error('Polling request failed:', response.status, response.statusText);
+                    // Încercăm din nou după 5 secunde în caz de eroare de rețea/tunnel
+                    setTimeout(() => pollTaskStatus(pid), 5000);
+                    return;
+                }
+
                 const data = await response.json();
+                console.log('Task status update:', data.status, data.progress + '%');
 
                 if (data.status === 'completed') {
+                    console.log('Task completed successfully!');
                     handleProcessingResult(data.result);
                 } else if (data.status === 'error') {
+                    console.error('Task reported an error:', data.message);
                     throw new Error(data.message || 'Eroare la procesare în background');
                 } else {
                     // Update progress UI
@@ -3110,24 +3121,34 @@
 
         // Procesează rezultatul
         async function handleProcessingResult(data) {
+            console.log('Processing result received:', data);
             updateProgress(100, 'Finalizare...');
             
-            // Re-încărcăm segmentele de pe disc pentru că nu mai vin în rezultatul task-ului (pentru economie de bandă/memorie)
+            // Re-încărcăm segmentele de pe disc pentru că nu mai vin în rezultatul task-ului
             try {
                 if (!data.audio_only) {
-                    const segResp = await fetch(`/segments_json/${processId}/original_segments.json`);
-                    const segData = await segResp.json();
-                    originalSegments = segData.segments;
-                    currentSegments = originalSegments;
+                    const pid = data.process_id || processId;
+                    console.log('Fetching segments for process:', pid);
+
+                    const segResp = await fetch(`/segments_json/${pid}/original_segments.json`);
+                    if (segResp.ok) {
+                        const segData = await segResp.json();
+                        originalSegments = segData.segments;
+                        currentSegments = originalSegments;
+                        console.log('Original segments loaded:', originalSegments.length);
+                    }
 
                     if (data.translation_used) {
-                        const transResp = await fetch(`/segments_json/${processId}/translated_segments_${data.translation_used}.json`);
-                        const transData = await transResp.json();
-                        translatedSegments = transData.segments;
+                        const transResp = await fetch(`/segments_json/${pid}/translated_segments_${data.translation_used}.json`);
+                        if (transResp.ok) {
+                            const transData = await transResp.json();
+                            translatedSegments = transData.segments;
+                            console.log('Translated segments loaded:', translatedSegments.length);
+                        }
                     }
                 }
             } catch (e) {
-                console.error('Eroare la încărcarea segmentelor:', e);
+                console.error('Eroare la încărcarea segmentelor de pe disc:', e);
             }
 
             if (data.audio_only) {
@@ -3152,16 +3173,19 @@
             document.getElementById('transcriptionResult').style.display = 'block';
             document.getElementById('transcriptionButtons').style.display = 'flex';
 
-            if (translationEnabled && data.is_translated) {
+            if (translationEnabled && data.translation_used) {
                 updateTranslationProgress(100, 'Traducere completă!');
             }
             
             // Salvează datele
             srtFilename = data.filename;
-            processId = data.process_id;
-            currentSegments = data.segments;
-            originalSegments = data.original_segments || [];
-            translatedSegments = data.translated_segments || [];
+            processId = data.process_id || processId;
+
+            // Nu mai suprascriem cu data.segments dacă am încărcat deja de pe disc
+            if (data.segments) currentSegments = data.segments;
+            if (data.original_segments) originalSegments = data.original_segments;
+            if (data.translated_segments) translatedSegments = data.translated_segments;
+
             imagePreviewUrl = data.image_preview_url;
             videoPreviewUrl = data.video_preview_url;
             videoDuration = data.video_duration || data.total_duration;
@@ -3316,11 +3340,15 @@
 
         // Afișează segmentele
         function displaySegments(segments) {
+            if (!segments || !Array.isArray(segments)) {
+                console.error('Segments invalid or not an array:', segments);
+                return;
+            }
+
             let segmentsHtml = '';
             
             segments.forEach(segment => {
                 const isTranslated = segment.original === false;
-                const sourceLang = segment.source_language || 'unknown';
                 const targetLang = segment.target_language || 'unknown';
                 
                 segmentsHtml += `
@@ -3331,14 +3359,6 @@
                             ${isTranslated ? `<span class="language-badge target">${targetLang}</span>` : ''}
                         </div>
                         <div class="segment-text" contenteditable="true" onblur="updateSegmentLocal(${segment.id}, this.innerText)">${segment.text}</div>
-                        ${isTranslated ? `
-                            <div class="segment-translation">
-                                <div class="segment-translation-header">
-                                    <span><i class="fas fa-language"></i> Traducere din ${sourceLang}</span>
-                                </div>
-                                <div class="segment-translation-text">${segment.text}</div>
-                            </div>
-                        ` : ''}
                     </div>
                 `;
             });

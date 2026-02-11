@@ -1223,6 +1223,7 @@ def background_processing_task(original_path, model_name, language, translation_
 
         if process_result.get('audio_only'):
             update_task_status(process_id, 'completed', 100, 'Audio extras cu succes', {
+                'process_id': process_id,
                 'audio_only': True,
                 'audio_filename': process_result.get('audio_file')
             })
@@ -1325,6 +1326,7 @@ def background_processing_task(original_path, model_name, language, translation_
         # Finalizare
         full_text = result.get('text', '')
         update_task_status(process_id, 'completed', 100, 'Procesare finalizată', {
+            'process_id': process_id,
             'filename': srt_filename,
             'segments_count': len(final_segments),
             'detected_language': detected_language,
