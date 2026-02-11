@@ -1730,7 +1730,7 @@
         <!-- Results -->
         <div class="result-container" id="resultContainer">
             <h2 id="resultTitle"><i class="fas fa-check-circle"></i> Transcriere finalizată!</h2>
-            
+
             <div id="audioOnlyResult" style="display: none; text-align: center; margin: 20px 0;">
                 <div class="info-card" style="display: inline-block; margin-bottom: 20px;">
                     <p><i class="fas fa-volume-up"></i> Audio-ul a fost extras cu succes. Fișierul video original a fost șters pentru a economisi spațiu.</p>
@@ -2793,14 +2793,6 @@
             
             try {
                 updateProgress(10, 'Se încarcă fișierul...');
-                updateProgress(30, 'Se încarcă modelul...');
-                updateProgress(50, 'Se transcrie audio-ul...');
-                updateProgress(70, 'Se procesează segmentele...');
-                
-                if (translationEnabled) {
-                    updateTranslationProgress(30, 'Se încarcă modelul de traducere...');
-                    updateTranslationProgress(60, 'Se traduc subtitrările...');
-                }
                 
                 const response = await fetch('/upload', {
                     method: 'POST',
@@ -2810,7 +2802,8 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    handleProcessingResult(data);
+                    processId = data.process_id;
+                    pollTaskStatus(processId);
                 } else {
                     if (data.use_chunked_upload) {
                         showToast('Fișier prea mare. Se recomandă upload segmentat.', 'warning');
@@ -3053,7 +3046,8 @@
                 const processData = await processResponse.json();
                 
                 if (processData.success) {
-                    handleProcessingResult(processData);
+                    processId = processData.process_id;
+                    pollTaskStatus(processId);
                 } else {
                     throw new Error(processData.error || 'Eroare la procesare');
                 }
@@ -3083,10 +3077,59 @@
             showToast('S-a activat modul "Doar extragere audio". Click pe Start.', 'info');
         }
         
+        // Poll statusul task-ului
+        async function pollTaskStatus(pid) {
+            try {
+                const response = await fetch(`/api/task_status/${pid}`);
+                const data = await response.json();
+
+                if (data.status === 'completed') {
+                    handleProcessingResult(data.result);
+                } else if (data.status === 'error') {
+                    throw new Error(data.message || 'Eroare la procesare în background');
+                } else {
+                    // Update progress UI
+                    if (data.status === 'processing') {
+                        updateProgress(data.progress || 50, data.message || 'Se procesează...');
+                        if (uploadStatus) uploadStatus.textContent = data.message;
+                    } else if (data.status === 'queued') {
+                        updateProgress(5, 'În coadă...');
+                    }
+
+                    // Poll again after 2 seconds
+                    setTimeout(() => pollTaskStatus(pid), 2000);
+                }
+            } catch (error) {
+                loading.style.display = 'none';
+                progressContainer.style.display = 'none';
+                showError(`Eroare monitorizare: ${error.message}`);
+                processBtn.disabled = false;
+                quickPreviewBtn.disabled = false;
+            }
+        }
+
         // Procesează rezultatul
-        function handleProcessingResult(data) {
+        async function handleProcessingResult(data) {
             updateProgress(100, 'Finalizare...');
             
+            // Re-încărcăm segmentele de pe disc pentru că nu mai vin în rezultatul task-ului (pentru economie de bandă/memorie)
+            try {
+                if (!data.audio_only) {
+                    const segResp = await fetch(`/segments_json/${processId}/original_segments.json`);
+                    const segData = await segResp.json();
+                    originalSegments = segData.segments;
+                    currentSegments = originalSegments;
+
+                    if (data.translation_used) {
+                        const transResp = await fetch(`/segments_json/${processId}/translated_segments_${data.translation_used}.json`);
+                        const transData = await transResp.json();
+                        translatedSegments = transData.segments;
+                    }
+                }
+            } catch (e) {
+                console.error('Eroare la încărcarea segmentelor:', e);
+            }
+
             if (data.audio_only) {
                 loading.style.display = 'none';
                 progressContainer.style.display = 'none';
