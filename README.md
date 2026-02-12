@@ -353,8 +353,8 @@ For CPU-only systems:
 
     Discussions: GitHub Discussions
 
-    Email: your-email@example.com
-
+    Email: robertandri@yahoo.fr
+    
 🌟 Star History
 
 If you find this project useful, please star it on GitHub! It helps others discover it.
