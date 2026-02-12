@@ -1,5 +1,4 @@
 import os
-import tempfile
 import whisper
 from flask import Flask, render_template, request, jsonify, send_file, session
 from werkzeug.utils import secure_filename
@@ -20,8 +19,13 @@ import math
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 * 1024  # 50GB max
-app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
-app.config['CHUNK_FOLDER'] = os.path.join(tempfile.gettempdir(), 'chunk_uploads')
+
+# Create a local data directory for all temporary files
+BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+os.makedirs(BASE_DATA_DIR, exist_ok=True)
+
+app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DATA_DIR, 'uploads')
+app.config['CHUNK_FOLDER'] = os.path.join(BASE_DATA_DIR, 'chunk_uploads')
 app.config['ALLOWED_EXTENSIONS'] = {'mp4', 'avi', 'mov', 'mkv', 'm4v', 'mp3', 'wav', 'mpeg', 'webm', 'mxf', 'wmv', 'flv'}
 app.config['SECRET_KEY'] = 'whisper-transcriber-secret-key-2024'
 app.config['CHUNK_SIZE'] = 10 * 1024 * 1024  # 10MB per chunk
@@ -172,6 +176,7 @@ TRANSLATION_LANGUAGES = {
 }
 
 # Creează folderele necesare
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['CHUNK_FOLDER'], exist_ok=True)
 
 def get_process_dir(process_id):
@@ -669,7 +674,7 @@ def allowed_file(filename):
 
 def convert_to_wav(input_path):
     """Converteste orice fișier audio/video în WAV pentru procesare"""
-    temp_wav = tempfile.mktemp(suffix='.wav')
+    temp_wav = os.path.join(app.config['UPLOAD_FOLDER'], f'temp_{uuid.uuid4()}.wav')
     
     try:
         # Mai întâi verifică dacă fișierul are audio
