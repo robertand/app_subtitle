@@ -1544,6 +1544,11 @@
                     <label for="adjustSegmentation">Ajustare automată segmentare pentru subtitrări</label>
                 </div>
                 
+                <div class="checkbox-group">
+                    <input type="checkbox" id="extractAudioOnlyCheckbox">
+                    <label for="extractAudioOnlyCheckbox">Doar extragere audio (fără transcriere)</label>
+                </div>
+
                 <div class="segmentation-controls" id="segmentationControls">
                     <div class="control-group">
                         <label>
@@ -1724,9 +1729,21 @@
         
         <!-- Results -->
         <div class="result-container" id="resultContainer">
-            <h2><i class="fas fa-check-circle"></i> Transcriere finalizată!</h2>
-            
-            <!-- Translation Toggle in Results -->
+            <h2 id="resultTitle"><i class="fas fa-check-circle"></i> Transcriere finalizată!</h2>
+
+            <div id="audioOnlyResult" style="display: none; text-align: center; margin: 20px 0;">
+                <div class="info-card" style="display: inline-block; margin-bottom: 20px;">
+                    <p><i class="fas fa-volume-up"></i> Audio-ul a fost extras cu succes. Fișierul video original a fost șters pentru a economisi spațiu.</p>
+                </div>
+                <div class="button-group">
+                    <a id="audioDownloadLink" href="#" class="btn download-btn">
+                        <i class="fas fa-download"></i> Descarcă Audio (MP3)
+                    </a>
+                </div>
+            </div>
+
+            <div id="transcriptionResult">
+                <!-- Translation Toggle in Results -->
             <div style="margin: 15px 0; display: flex; justify-content: center; gap: 10px;">
                 <button class="segment-translation-toggle" id="toggleSegmentsTranslation" onclick="toggleSegmentsTranslation()">
                     <i class="fas fa-language"></i> Afișează Traducerea
@@ -1744,7 +1761,10 @@
             <h3><i class="fas fa-list"></i> Segmente cu timecode:</h3>
             <div class="segments" id="segmentsList"></div>
             
-            <div class="button-group">
+            <div id="transcriptionButtons" class="button-group">
+                <button class="btn" id="saveEditsBtn" onclick="saveEdits()" style="background: #805ad5;">
+                    <i class="fas fa-save"></i> Salvează Modificările
+                </button>
                 <button class="btn download-btn" onclick="downloadSRT()">
                     <i class="fas fa-download"></i> Descarcă Fișier SRT
                 </button>
@@ -1821,6 +1841,7 @@
         const modelGrid = document.getElementById('modelGrid');
         const languageSelect = document.getElementById('languageSelect');
         const adjustSegmentationCheckbox = document.getElementById('adjustSegmentation');
+        const extractAudioOnlyCheckbox = document.getElementById('extractAudioOnlyCheckbox');
         const segmentationControls = document.getElementById('segmentationControls');
         const minDurationSlider = document.getElementById('minDuration');
         const maxDurationSlider = document.getElementById('maxDuration');
@@ -1874,6 +1895,7 @@
         const newTranslationSelect = document.getElementById('newTranslationSelect');
         const addTranslationBtn = document.getElementById('addTranslationBtn');
         const showMultipleTranslationsBtn = document.getElementById('showMultipleTranslationsBtn');
+        const saveEditsBtn = document.getElementById('saveEditsBtn');
         
         // Elemente pentru upload segmentat
         const simpleUploadBtn = document.getElementById('simpleUploadBtn');
@@ -1939,6 +1961,48 @@
             // Încarcă limbile pentru traduceri multiple
             loadNewTranslationLanguages();
             
+            // Event listeners pentru video
+            videoPreview.addEventListener('timeupdate', function() {
+                const currentTime = videoPreview.currentTime;
+                currentTimeElement.textContent = formatTime(currentTime);
+                updateCurrentSubtitle(currentTime);
+            });
+
+            videoPreview.addEventListener('play', function() {
+                console.log('Video started playing. Current segments:', currentSegments ? currentSegments.length : 0);
+                videoPlaying = true;
+                playVideoBtn.innerHTML = '<i class="fas fa-pause"></i> Pauză';
+
+                // Dacă suntem în playback simulat și a pornit video-ul real, oprim simulatorul
+                if (videoPlayInterval) {
+                    console.log('Switching from simulated to real video sync');
+                    clearInterval(videoPlayInterval);
+                    videoPlayInterval = null;
+                }
+            });
+
+            videoPreview.addEventListener('pause', function() {
+                console.log('Video paused');
+                videoPlaying = false;
+                playVideoBtn.innerHTML = '<i class="fas fa-play"></i> Play cu Subtitrări';
+            });
+
+            videoPreview.addEventListener('ended', function() {
+                console.log('Video ended');
+                stopPlayback();
+            });
+
+            videoPreview.addEventListener('error', function(e) {
+                console.error('Video element error:', videoPreview.error);
+                showToast('Eroare la încărcarea video-ului. Verificați conexiunea tunnel.', 'error');
+            });
+
+            // Listener pentru butonul de play de sub video
+            playVideoBtn.addEventListener('click', function() {
+                console.log('Play button under video clicked');
+                playVideoWithSubtitles();
+            });
+
             // Afișează un mesaj de bun venit
             setTimeout(() => {
                 showToast(`Aplicația este gata! Upload: ${uploadMethod === 'simple' ? 'Simplu' : 'Segmentat'}`, 'success');
@@ -1955,34 +2019,66 @@
         // Restaurează sesiunea anterioară
         async function restoreSession(pid) {
             try {
-                showToast('Se restaurează sesiunea anterioară...', 'info');
-
                 const response = await fetch(`/segments_json/${pid}/original_segments.json`);
                 if (!response.ok) return;
 
                 const data = await response.json();
                 if (data.segments) {
+                    showToast('Se restaurează sesiunea anterioară...', 'info');
                     originalSegments = data.segments;
                     currentSegments = data.segments;
                     processId = pid;
 
-                    // Încearcă să găsești și fișierul SRT original
+                    // Încearcă să obțină starea completă de la server
                     const statusResp = await fetch('/get_existing_translations');
                     const statusData = await statusResp.json();
 
                     if (statusData.success) {
                         infoLanguage.textContent = statusData.detected_language;
+                        infoModel.textContent = "Restaurat";
+                        infoTime.textContent = "-";
+
+                        // Caută fișierul SRT principal
+                        if (statusData.translations && statusData.translations.length > 0) {
+                            // ...
+                        }
+
+                        // Căutăm orice fișier SRT în directorul procesului pentru a activa descărcarea
+                        // Deocamdată activăm descărcarea generală
+                        srtFilename = "transcription.srt"; // Fallback name
+
                         displaySegments(originalSegments);
                         resultContainer.style.display = 'block';
+                        processingInfo.style.display = 'block';
                         showMultipleTranslationsBtn.style.display = 'inline-flex';
 
-                        // Caută dacă există vreo traducere activă anterior
+                        // Actualizează lista de traduceri
                         refreshTranslationsList();
+
+                        // Verifică dacă există video pentru preview
+                        checkVideoExists(pid);
                     }
                 }
             } catch (error) {
                 console.error('Eroare la restaurarea sesiunii:', error);
             }
+        }
+
+        // Verifică dacă există un fișier video pentru preview
+        async function checkVideoExists(pid) {
+            try {
+                const resp = await fetch(`/check_video/${pid}`);
+                const data = await resp.json();
+                if (data.success && data.video_url) {
+                    videoPreview.src = data.video_url;
+                    videoPreview.style.display = 'block';
+                    videoPreviewContainer.style.display = 'block';
+                    videoDuration = data.duration || 0;
+                    totalTimeElement.textContent = formatTime(videoDuration);
+                    playWithSubtitlesBtn.style.display = 'inline-flex';
+                    showToast('Preview video restaurat', 'success');
+                }
+            } catch (e) {}
         }
         
         // Selectează metoda de upload
@@ -2735,17 +2831,10 @@
             formData.append('language', currentLanguage);
             formData.append('translation_target', translationTarget || '');
             formData.append('adjust_segmentation', adjustSegmentationCheckbox.checked);
+            formData.append('extract_audio_only', extractAudioOnlyCheckbox.checked);
             
             try {
                 updateProgress(10, 'Se încarcă fișierul...');
-                updateProgress(30, 'Se încarcă modelul...');
-                updateProgress(50, 'Se transcrie audio-ul...');
-                updateProgress(70, 'Se procesează segmentele...');
-                
-                if (translationEnabled) {
-                    updateTranslationProgress(30, 'Se încarcă modelul de traducere...');
-                    updateTranslationProgress(60, 'Se traduc subtitrările...');
-                }
                 
                 const response = await fetch('/upload', {
                     method: 'POST',
@@ -2755,7 +2844,8 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    handleProcessingResult(data);
+                    processId = data.process_id;
+                    pollTaskStatus(processId);
                 } else {
                     if (data.use_chunked_upload) {
                         showToast('Fișier prea mare. Se recomandă upload segmentat.', 'warning');
@@ -2990,14 +3080,16 @@
                         model: currentModel,
                         language: currentLanguage,
                         translation_target: translationTarget || '',
-                        adjust_segmentation: adjustSegmentationCheckbox.checked
+                        adjust_segmentation: adjustSegmentationCheckbox.checked,
+                        extract_audio_only: extractAudioOnlyCheckbox.checked
                     })
                 });
                 
                 const processData = await processResponse.json();
                 
                 if (processData.success) {
-                    handleProcessingResult(processData);
+                    processId = processData.process_id;
+                    pollTaskStatus(processId);
                 } else {
                     throw new Error(processData.error || 'Eroare la procesare');
                 }
@@ -3020,23 +3112,125 @@
         }
         
         function extractAudioOnly() {
-            showToast('Funcționalitatea de extragere audio va fi implementată în curând', 'info');
+            extractAudioOnlyCheckbox.checked = true;
+            if (selectedFile && selectedFile.size > maxSimpleSize) {
+                switchToChunkedUpload();
+            }
+            showToast('S-a activat modul "Doar extragere audio". Click pe Start.', 'info');
         }
         
+        // Poll statusul task-ului
+        async function pollTaskStatus(pid) {
+            console.log('Polling status for task:', pid);
+            try {
+                const response = await fetch(`/api/task_status/${pid}`);
+                if (!response.ok) {
+                    console.error('Polling request failed:', response.status, response.statusText);
+                    // Încercăm din nou după 5 secunde în caz de eroare de rețea/tunnel
+                    setTimeout(() => pollTaskStatus(pid), 5000);
+                    return;
+                }
+
+                const data = await response.json();
+                console.log('Task status update:', data.status, data.progress + '%');
+
+                if (data.status === 'completed') {
+                    console.log('Task completed successfully!');
+                    handleProcessingResult(data.result);
+                } else if (data.status === 'error') {
+                    console.error('Task reported an error:', data.message);
+                    throw new Error(data.message || 'Eroare la procesare în background');
+                } else {
+                    // Update progress UI
+                    if (data.status === 'processing') {
+                        updateProgress(data.progress || 50, data.message || 'Se procesează...');
+                        if (uploadStatus) uploadStatus.textContent = data.message;
+                    } else if (data.status === 'queued') {
+                        updateProgress(5, 'În coadă...');
+                    }
+
+                    // Poll again after 2 seconds
+                    setTimeout(() => pollTaskStatus(pid), 2000);
+                }
+            } catch (error) {
+                loading.style.display = 'none';
+                progressContainer.style.display = 'none';
+                showError(`Eroare monitorizare: ${error.message}`);
+                processBtn.disabled = false;
+                quickPreviewBtn.disabled = false;
+            }
+        }
+
         // Procesează rezultatul
-        function handleProcessingResult(data) {
+        async function handleProcessingResult(data) {
+            console.log('Processing result received:', data);
             updateProgress(100, 'Finalizare...');
             
-            if (translationEnabled && data.is_translated) {
+            // Re-încărcăm segmentele de pe disc pentru că nu mai vin în rezultatul task-ului
+            try {
+                if (!data.audio_only) {
+                    const pid = data.process_id || processId;
+                    console.log('Fetching segments for process:', pid);
+
+                    const segResp = await fetch(`/segments_json/${pid}/original_segments.json?t=${Date.now()}`);
+                    if (segResp.ok) {
+                        const segData = await segResp.json();
+                        originalSegments = segData.segments;
+                        currentSegments = originalSegments;
+                        console.log('Original segments loaded:', originalSegments.length);
+                    }
+
+                    if (data.translation_used) {
+                        const transResp = await fetch(`/segments_json/${pid}/translated_segments_${data.translation_used}.json?t=${Date.now()}`);
+                        if (transResp.ok) {
+                            const transData = await transResp.json();
+                            translatedSegments = transData.segments;
+                            currentSegments = translatedSegments; // Implicit arată traducerea dacă a fost cerută
+                            console.log('Translated segments loaded and set as current:', translatedSegments.length);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('Eroare la încărcarea segmentelor de pe disc:', e);
+            }
+
+            if (data.audio_only) {
+                loading.style.display = 'none';
+                progressContainer.style.display = 'none';
+                chunkedUploadProgress.style.display = 'none';
+
+                document.getElementById('resultTitle').innerHTML = '<i class="fas fa-check-circle"></i> Audio extras!';
+                document.getElementById('audioOnlyResult').style.display = 'block';
+                document.getElementById('transcriptionResult').style.display = 'none';
+                document.getElementById('transcriptionButtons').style.display = 'none';
+                document.getElementById('audioDownloadLink').href = `/download/${data.process_id}/${data.audio_filename}`;
+
+                resultContainer.style.display = 'block';
+                showToast('Audio extras cu succes!', 'success');
+                return;
+            }
+
+            // Re-asigură-te că vedem transcrierea
+            document.getElementById('resultTitle').innerHTML = '<i class="fas fa-check-circle"></i> Transcriere finalizată!';
+            document.getElementById('audioOnlyResult').style.display = 'none';
+            document.getElementById('transcriptionResult').style.display = 'block';
+            document.getElementById('transcriptionButtons').style.display = 'flex';
+
+            if (translationEnabled && data.translation_used) {
                 updateTranslationProgress(100, 'Traducere completă!');
             }
             
             // Salvează datele
             srtFilename = data.filename;
-            processId = data.process_id;
-            currentSegments = data.segments;
-            originalSegments = data.original_segments || [];
-            translatedSegments = data.translated_segments || [];
+            processId = data.process_id || processId;
+
+            // Fallback: folosim datele din rezultat doar dacă fetch-ul de pe disc a eșuat
+            if (!currentSegments || currentSegments.length === 0) {
+                if (data.segments) currentSegments = data.segments;
+                if (data.original_segments) originalSegments = data.original_segments;
+                if (data.translated_segments) translatedSegments = data.translated_segments;
+            }
+
             imagePreviewUrl = data.image_preview_url;
             videoPreviewUrl = data.video_preview_url;
             videoDuration = data.video_duration || data.total_duration;
@@ -3087,7 +3281,10 @@
             // Actualizează video preview dacă există
             if (data.is_video) {
                 if (videoPreviewUrl) {
-                    videoPreview.src = videoPreviewUrl;
+                    console.log('Setting video preview src:', videoPreviewUrl);
+                    // Adăugăm un timestamp pentru a forța reîncărcarea prin tunnel/cache
+                    videoPreview.src = videoPreviewUrl + '?t=' + Date.now();
+                    videoPreview.load(); // Forțează încărcarea
                     videoPreview.style.display = 'block';
                     imagePreview.style.display = 'none';
                     
@@ -3135,15 +3332,80 @@
         // Restul funcțiilor rămân la fel (displaySegments, toggleSegmentsTranslation, etc.)
         // ... (codul rămas este identic cu cel din versiunea anterioară)
         
+        // Actualizează textul segmentului în memoria locală
+        function updateSegmentLocal(id, newText) {
+            const segment = currentSegments.find(s => s.id === id);
+            if (segment) {
+                segment.text = newText;
+            }
+        }
+
+        // Salvează modificările pe server
+        async function saveEdits() {
+            if (!processId || !currentSegments.length) {
+                showToast('Nu există date de salvat', 'warning');
+                return;
+            }
+
+            saveEditsBtn.disabled = true;
+            const originalContent = saveEditsBtn.innerHTML;
+            saveEditsBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Se salvează...';
+
+            try {
+                const response = await fetch('/api/save_edits', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        process_id: processId,
+                        segments: currentSegments,
+                        is_translated: !!currentTranslationLang,
+                        target_lang: currentTranslationLang
+                    })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    showToast('Modificările au fost salvate cu succes!', 'success');
+                    if (data.srt_filename) {
+                        if (currentTranslationLang) {
+                            translatedSrtFilename = data.srt_filename;
+                        } else {
+                            srtFilename = data.srt_filename;
+                        }
+                    }
+                } else {
+                    throw new Error(data.error || 'Eroare la salvare');
+                }
+            } catch (error) {
+                console.error('Eroare la salvarea modificărilor:', error);
+                showError(`Eroare la salvare: ${error.message}`);
+                showToast('Eroare la salvare', 'error');
+            } finally {
+                saveEditsBtn.disabled = false;
+                saveEditsBtn.innerHTML = originalContent;
+            }
+        }
+
         // Afișează segmentele
         function displaySegments(segments) {
+            if (!segments || !Array.isArray(segments)) {
+                console.error('Segments invalid or not an array:', segments);
+                return;
+            }
+
             let segmentsHtml = '';
             
             segments.forEach(segment => {
                 const isTranslated = segment.original === false;
-                const sourceLang = segment.source_language || 'unknown';
                 const targetLang = segment.target_language || 'unknown';
                 
+                // Căutăm textul original dacă suntem pe o traducere
+                let originalText = "";
+                if (isTranslated && originalSegments.length > 0) {
+                    const orig = originalSegments.find(s => s.id === segment.id);
+                    if (orig) originalText = orig.text;
+                }
+
                 segmentsHtml += `
                     <div class="segment" data-start="${segment.start}" data-end="${segment.end}">
                         <div class="segment-header">
@@ -3151,13 +3413,10 @@
                             <span><i class="far fa-clock"></i> ${segment.start_formatted} → ${segment.end_formatted}</span>
                             ${isTranslated ? `<span class="language-badge target">${targetLang}</span>` : ''}
                         </div>
-                        <div class="segment-text">${segment.text}</div>
-                        ${isTranslated ? `
-                            <div class="segment-translation">
-                                <div class="segment-translation-header">
-                                    <span><i class="fas fa-language"></i> Traducere din ${sourceLang}</span>
-                                </div>
-                                <div class="segment-translation-text">${segment.text}</div>
+                        <div class="segment-text" contenteditable="true" onblur="updateSegmentLocal(${segment.id}, this.innerText)">${segment.text}</div>
+                        ${isTranslated && originalText ? `
+                            <div class="segment-translation" style="margin-top: 5px; opacity: 0.7; font-size: 0.9em; border-top: 1px solid #eee; padding-top: 5px;">
+                                <div style="color: #718096;"><i class="fas fa-quote-left"></i> ${originalText}</div>
                             </div>
                         ` : ''}
                     </div>
@@ -3172,11 +3431,15 @@
             showTranslatedSegments = !showTranslatedSegments;
             
             if (showTranslatedSegments && translatedSegments.length > 0) {
+                currentSegments = translatedSegments;
+                currentTranslationLang = translationTarget; // sau limba țintă curentă
                 displaySegments(translatedSegments);
                 toggleSegmentsTranslationBtn.innerHTML = '<i class="fas fa-language"></i> Afișează Original';
                 toggleSegmentsTranslationBtn.classList.add('active');
                 showToast('Afișează segmente traduse', 'info');
             } else {
+                currentSegments = originalSegments;
+                currentTranslationLang = null;
                 displaySegments(originalSegments);
                 toggleSegmentsTranslationBtn.innerHTML = '<i class="fas fa-language"></i> Afișează Traducerea';
                 toggleSegmentsTranslationBtn.classList.remove('active');
@@ -3389,9 +3652,10 @@
             showToast(`Descărcarea pentru ${langCode} va fi implementată în curând.`, 'info');
         }
         
+
         // Rulează video cu subtitrări sincronizate
         function playVideoWithSubtitles() {
-            if (!currentSegments.length) {
+            if (!currentSegments || !currentSegments.length) {
                 showToast('Nu există subtitrări pentru a fi afișate', 'error');
                 return;
             }
@@ -3404,24 +3668,40 @@
         }
         
         function startPlayback() {
-            videoPlaying = true;
-            playVideoBtn.innerHTML = '<i class="fas fa-pause"></i> Pauză';
-            
-            if (videoPreviewUrl && videoPreview.src) {
-                videoPreview.currentTime = 0;
-                videoPreview.play();
-                
-                videoPreview.ontimeupdate = function() {
-                    const currentTime = videoPreview.currentTime;
-                    currentTimeElement.textContent = formatTime(currentTime);
-                    updateCurrentSubtitle(currentTime);
-                };
-                
-                videoPreview.onended = function() {
-                    stopPlayback();
-                    showToast('Playback terminat', 'info');
-                };
+            console.log('startPlayback called. videoPreviewUrl:', videoPreviewUrl, 'videoPreview.src:', videoPreview.src);
+
+            // Verificăm dacă avem o sursă video validă
+            const currentSrc = videoPreview.src;
+            const isBaseUrl = currentSrc === window.location.href || currentSrc === window.location.href + '/';
+            const hasRealSrc = currentSrc && !isBaseUrl && !currentSrc.startsWith('blob:');
+
+            if (videoPreviewUrl || hasRealSrc) {
+                console.log('Starting video playback for src:', videoPreview.src);
+
+                // Asigură-te că containerul e vizibil
+                videoPreviewContainer.style.display = 'block';
+                videoPreview.style.display = 'block';
+
+                if (videoPreview.ended) {
+                    videoPreview.currentTime = 0;
+                }
+
+                videoPreview.play().then(() => {
+                    console.log('Video play command successful');
+                }).catch(e => {
+                    console.error('Playback error:', e);
+                    showToast('Browser-ul a blocat redarea sau video-ul nu s-a încărcat.', 'error');
+
+                    // Fallback la simulare dacă video-ul nu vrea să pornească deloc
+                    if (!videoPlaying) {
+                        console.log('Falling back to simulated playback');
+                        startSimulatedPlayback();
+                    }
+                });
             } else {
+                console.log('No video source, starting simulated playback');
+                videoPlaying = true;
+                playVideoBtn.innerHTML = '<i class="fas fa-pause"></i> Pauză';
                 startSimulatedPlayback();
             }
         }
@@ -3450,13 +3730,32 @@
         }
         
         function updateCurrentSubtitle(currentTime) {
-            const segment = currentSegments.find(s => 
-                currentTime >= s.start && currentTime <= s.end
-            );
+            if (!currentSegments || currentSegments.length === 0) {
+                // Încearcă să recupereze din originalSegments dacă currentSegments e gol
+                if (originalSegments && originalSegments.length > 0) {
+                    console.log('Sync: currentSegments was empty, using originalSegments');
+                    currentSegments = originalSegments;
+                } else {
+                    if (videoPlaying && Math.random() < 0.01) console.warn('No segments available for sync');
+                    return;
+                }
+            }
+
+            // Debugging ocazional (la fiecare 10 secunde de video)
+            if (Math.floor(currentTime) % 10 === 0 && Math.random() < 0.05) {
+                console.log(`Sync check: time=${currentTime.toFixed(2)}, segments=${currentSegments.length}`);
+            }
+
+            const segment = currentSegments.find(s => {
+                const start = parseFloat(s.start);
+                const end = parseFloat(s.end);
+                return currentTime >= start && currentTime <= end;
+            });
             
             if (segment) {
                 const segmentIndex = currentSegments.indexOf(segment);
                 if (segmentIndex !== currentSegmentIndex) {
+                    console.log(`Subtitle active: [${segment.start_formatted} -> ${segment.end_formatted}] ${segment.text.substring(0, 30)}...`);
                     currentSegmentIndex = segmentIndex;
                     currentSubtitle.textContent = segment.text;
                     subtitleTimestamp.textContent = `${segment.start_formatted} → ${segment.end_formatted}`;
@@ -3465,7 +3764,7 @@
                     highlightCurrentSegment(segmentIndex);
                 }
             } else {
-                if (currentSubtitle.textContent !== '') {
+                if (currentSubtitle.textContent !== '' || subtitleOverlay.style.display !== 'none') {
                     currentSubtitle.textContent = '';
                     subtitleTimestamp.textContent = '';
                     subtitleOverlay.style.display = 'none';
@@ -3487,13 +3786,12 @@
         }
         
         function stopPlayback() {
+            console.log('Stopping playback');
             videoPlaying = false;
             playVideoBtn.innerHTML = '<i class="fas fa-play"></i> Play cu Subtitrări';
             
-            if (videoPreviewUrl && videoPreview.pause) {
+            if (videoPreview) {
                 videoPreview.pause();
-                videoPreview.ontimeupdate = null;
-                videoPreview.onended = null;
             }
             
             if (videoPlayInterval) {
@@ -3624,6 +3922,10 @@
             toggleSegmentsTranslationBtn.classList.remove('active');
             toggleSegmentsTranslationBtn.style.display = 'none';
             downloadTranslatedBtn.style.display = 'none';
+            document.getElementById('audioOnlyResult').style.display = 'none';
+            document.getElementById('transcriptionResult').style.display = 'block';
+            document.getElementById('transcriptionButtons').style.display = 'flex';
+            document.getElementById('resultTitle').innerHTML = '<i class="fas fa-check-circle"></i> Transcriere finalizată!';
             mainDownloadTranslatedBtn.style.display = 'none';
             showMultipleTranslationsBtn.style.display = 'inline-flex';
             
