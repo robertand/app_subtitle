@@ -1263,6 +1263,12 @@ def process_large_file(file_path, model_name, language, translation_target,
 
             # Procesează fiecare chunk din fișierul audio extras
             for chunk_idx in range(total_chunks):
+                # Verifică dacă task-ul a fost anulat
+                task = get_task_status(process_id)
+                if task and task.get('status') == 'cancelled':
+                    print(f"Task {process_id} anulat în timpul procesării chunks.")
+                    return None
+
                 start_chunk = chunk_idx * chunk_duration
                 length_chunk = min(chunk_duration, duration - start_chunk)
 
@@ -1288,18 +1294,34 @@ def process_large_file(file_path, model_name, language, translation_target,
                     '-y',
                     audio_chunk_path
                 ]
-                
+
                 subprocess.run(cmd, check=True, capture_output=True)
-                
-                # Transcrie chunk-ul
-                transcribe_kwargs = {
-                    'task': 'transcribe',
-                    'fp16': (device == "cuda")
-                }
-                if language != 'auto':
-                    transcribe_kwargs['language'] = language
-                
-                chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
+
+                # Transcrie chunk-ul cu validare
+                chunk_result = None
+                if os.path.exists(audio_chunk_path) and os.path.getsize(audio_chunk_path) > 100:
+                    try:
+                        # Verifică durata chunk-ului
+                        chunk_dur = get_video_duration(audio_chunk_path)
+                        if chunk_dur and chunk_dur > 0.1:
+                            transcribe_kwargs = {
+                                'task': 'transcribe',
+                                'fp16': (device == "cuda")
+                            }
+                            if language != 'auto':
+                                transcribe_kwargs['language'] = language
+
+                            chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
+                        else:
+                            print(f"Chunk {chunk_idx} prea scurt: {chunk_dur}s")
+                    except Exception as e:
+                        print(f"Eroare la verificarea/transcrierea chunk {chunk_idx}: {str(e)}")
+
+                if not chunk_result:
+                    # Dacă chunk-ul e invalid sau Whisper a eșuat, trecem peste el
+                    if os.path.exists(audio_chunk_path):
+                        os.remove(audio_chunk_path)
+                    continue
 
                 # Capture detected language from the first chunk if in auto mode
                 if chunk_idx == 0 and language == 'auto':
@@ -1382,6 +1404,14 @@ def process_normal_file(file_path, model, device, language, translation_target,
     
     try:
         print(f"Transcriere fișier: {audio_path}")
+        # Validare audio înainte de transcriere
+        if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 100:
+            raise Exception("Fișier audio invalid sau prea mic")
+
+        audio_dur = get_video_duration(audio_path)
+        if not audio_dur or audio_dur < 0.1:
+            raise Exception(f"Durată audio invalidă: {audio_dur}")
+
         result = model.transcribe(audio_path, **transcribe_kwargs)
     except Exception as e:
         print(f"Eroare la transcriere: {str(e)}")
@@ -1570,6 +1600,11 @@ def background_processing_task(original_path, model_name, language, translation_
         )
 
         if process_result is None:
+            # Verifică dacă a fost anulat
+            task = get_task_status(process_id)
+            if task and task.get('status') == 'cancelled':
+                print(f"Task {process_id} a fost anulat.")
+                return
             raise ValueError("Procesarea a returnat un rezultat nul.")
 
         if extract_audio_only:
@@ -1661,12 +1696,16 @@ def background_processing_task(original_path, model_name, language, translation_
             'full_text': result.get('text', ''),
             'language_used': detected_language,
             'translation_used': translation_used,
+            'is_translated': bool(translation_used),
             'process_id': process_id,
             'video_preview_url': video_preview_url,
             'image_preview_url': image_preview_url,
             'is_video': is_video,
+            'is_mp4': original_path.lower().endswith('.mp4'),
+            'original_format': original_path.rsplit('.', 1)[-1].lower() if '.' in original_path else 'unknown',
             'model_used': model_name,
-            'processing_time': 'Finalizat'
+            'processing_time': 'Finalizat',
+            'translation_time': f"{translation_time:.1f}s" if translation_time else None
         }
 
         update_task_status(process_id, 'completed', 100, 'Procesare finalizată!', final_result)
@@ -1738,6 +1777,22 @@ def task_status(process_id):
     if not status:
         return jsonify({'error': 'Task-ul nu a fost găsit'}), 404
     return jsonify(status)
+
+@app.route('/api/cancel_task/<process_id>', methods=['POST'])
+def cancel_task(process_id):
+    """Anulează un task de procesare în curs"""
+    try:
+        status = get_task_status(process_id)
+        if not status:
+            return jsonify({'error': 'Task-ul nu a fost găsit'}), 404
+
+        if status['status'] in ['processing', 'queued']:
+            update_task_status(process_id, 'cancelled', message='Task anulat de utilizator.')
+            return jsonify({'success': True, 'message': 'Task anulat'})
+        else:
+            return jsonify({'success': False, 'message': f'Task-ul nu poate fi anulat în starea actuală: {status["status"]}'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/save_edits', methods=['POST'])
 def save_edits():

@@ -1390,8 +1390,33 @@
                 <span id="timeoutInfo">Timeout: 2 ore</span>
             </div>
         </div>
+
+        <!-- Upload and Main Controls (Moved Higher) -->
+        <div style="background: #fff; border-radius: 15px; padding: 20px; margin-bottom: 25px; border: 2px solid #667eea; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.1);">
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-icon"><i class="fas fa-file-upload"></i></div>
+                <div class="upload-text" id="uploadText">Trage și plasează fișierul aici sau click pentru a selecta</div>
+                <div class="file-info" id="fileInfo">
+                    Upload Simplu: &lt;500MB • Upload Segmentat: până la 50GB
+                </div>
+                <input type="file" class="file-input" id="fileInput"
+                       accept=".mp4,.avi,.mov,.mkv,.m4v,.mp3,.wav,.mpeg,.webm,.mxf,.wmv,.flv">
+            </div>
+
+            <div class="button-group" style="margin-top: 20px;">
+                <button class="btn" id="processBtn" onclick="processFile()" disabled style="min-width: 200px;">
+                    <i class="fas fa-play"></i> Start Transcriere
+                </button>
+                <button class="btn btn-secondary" id="quickPreviewBtn" onclick="quickPreview()" disabled>
+                    <i class="fas fa-eye"></i> Previzualizare Rapidă
+                </button>
+                <button class="btn btn-danger" onclick="resetApp()">
+                    <i class="fas fa-redo"></i> Reset
+                </button>
+            </div>
+        </div>
         
-        
+
         <!-- Chunked Upload Progress -->
         <div class="chunked-upload-progress" id="chunkedUploadProgress">
             <h3><i class="fas fa-tasks"></i> Progres Upload Segmentat</h3>
@@ -1588,16 +1613,6 @@
             <span id="formatInfoText"></span>
         </div>
         
-        <!-- Upload Area -->
-        <div class="upload-area" id="uploadArea">
-            <div class="upload-icon"><i class="fas fa-file-upload"></i></div>
-            <div class="upload-text" id="uploadText">Trage și plasează fișierul aici sau click pentru a selecta</div>
-            <div class="file-info" id="fileInfo">
-                Upload Simplu: &lt;500MB • Upload Segmentat: până la 50GB
-            </div>
-            <input type="file" class="file-input" id="fileInput" 
-                   accept=".mp4,.avi,.mov,.mkv,.m4v,.mp3,.wav,.mpeg,.webm,.mxf,.wmv,.flv">
-        </div>
         
         <!-- Video Preview -->
         <div class="video-preview-container" id="videoPreviewContainer">
@@ -1662,18 +1677,6 @@
         <!-- Error Message -->
         <div class="error" id="errorArea"></div>
         
-        <!-- Button Group -->
-        <div class="button-group">
-            <button class="btn" id="processBtn" onclick="processFile()" disabled>
-                <i class="fas fa-play"></i> Start Transcriere
-            </button>
-            <button class="btn btn-secondary" id="quickPreviewBtn" onclick="quickPreview()" disabled>
-                <i class="fas fa-eye"></i> Previzualizare Rapidă
-            </button>
-            <button class="btn btn-danger" onclick="resetApp()">
-                <i class="fas fa-redo"></i> Reset
-            </button>
-        </div>
         
         <!-- Processing Info -->
         <div class="processing-info" id="processingInfo">
@@ -2999,6 +3002,10 @@
             } catch (error) {
                 loading.style.display = 'none';
                 progressContainer.style.display = 'none';
+                chunkedUploadProgress.style.display = 'none';
+                if (loadingTranslationInfo) loadingTranslationInfo.style.display = 'none';
+                if (processingChunksInfo) processingChunksInfo.style.display = 'none';
+
                 showError(`Eroare monitorizare: ${error.message}`);
                 processBtn.disabled = false;
                 quickPreviewBtn.disabled = false;
@@ -3090,8 +3097,8 @@
             // Afișează textul complet
             document.getElementById('fullText').textContent = data.full_text;
             
-            // Afișează segmentele (inițial originale)
-            displaySegments(originalSegments);
+            // Afișează segmentele
+            displaySegments(currentSegments);
             
             // Afișează informații procesare
             infoModel.textContent = `${data.model_used} ${isMp4File ? '(MP4 direct)' : `(${data.original_format} → MP4)`}`;
@@ -3715,6 +3722,11 @@
         function resetApp() {
             stopPlayback();
             
+            // Anulează task-ul activ dacă există
+            if (processId) {
+                fetch(`/api/cancel_task/${processId}`, { method: 'POST' }).catch(console.error);
+            }
+
             selectedFile = null;
             srtFilename = '';
             translatedSrtFilename = '';
