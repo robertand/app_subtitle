@@ -1961,6 +1961,35 @@
             // Încarcă limbile pentru traduceri multiple
             loadNewTranslationLanguages();
             
+            // Event listeners pentru video
+            videoPreview.addEventListener('timeupdate', function() {
+                const currentTime = videoPreview.currentTime;
+                currentTimeElement.textContent = formatTime(currentTime);
+                updateCurrentSubtitle(currentTime);
+            });
+
+            videoPreview.addEventListener('play', function() {
+                console.log('Video started playing');
+                videoPlaying = true;
+                playVideoBtn.innerHTML = '<i class="fas fa-pause"></i> Pauză';
+            });
+
+            videoPreview.addEventListener('pause', function() {
+                console.log('Video paused');
+                videoPlaying = false;
+                playVideoBtn.innerHTML = '<i class="fas fa-play"></i> Play cu Subtitrări';
+            });
+
+            videoPreview.addEventListener('ended', function() {
+                console.log('Video ended');
+                stopPlayback();
+            });
+
+            videoPreview.addEventListener('error', function(e) {
+                console.error('Video element error:', videoPreview.error);
+                showToast('Eroare la încărcarea video-ului. Verificați conexiunea tunnel.', 'error');
+            });
+
             // Afișează un mesaj de bun venit
             setTimeout(() => {
                 showToast(`Aplicația este gata! Upload: ${uploadMethod === 'simple' ? 'Simplu' : 'Segmentat'}`, 'success');
@@ -3182,10 +3211,12 @@
             srtFilename = data.filename;
             processId = data.process_id || processId;
 
-            // Nu mai suprascriem cu data.segments dacă am încărcat deja de pe disc
-            if (data.segments) currentSegments = data.segments;
-            if (data.original_segments) originalSegments = data.original_segments;
-            if (data.translated_segments) translatedSegments = data.translated_segments;
+            // Fallback: folosim datele din rezultat doar dacă fetch-ul de pe disc a eșuat
+            if (!currentSegments || currentSegments.length === 0) {
+                if (data.segments) currentSegments = data.segments;
+                if (data.original_segments) originalSegments = data.original_segments;
+                if (data.translated_segments) translatedSegments = data.translated_segments;
+            }
 
             imagePreviewUrl = data.image_preview_url;
             videoPreviewUrl = data.video_preview_url;
@@ -3608,27 +3639,6 @@
             showToast(`Descărcarea pentru ${langCode} va fi implementată în curând.`, 'info');
         }
         
-        // Event listeners permanente pentru video
-        videoPreview.ontimeupdate = function() {
-            const currentTime = videoPreview.currentTime;
-            currentTimeElement.textContent = formatTime(currentTime);
-            updateCurrentSubtitle(currentTime);
-        };
-
-        videoPreview.onplay = function() {
-            videoPlaying = true;
-            playVideoBtn.innerHTML = '<i class="fas fa-pause"></i> Pauză';
-        };
-
-        videoPreview.onpause = function() {
-            videoPlaying = false;
-            playVideoBtn.innerHTML = '<i class="fas fa-play"></i> Play cu Subtitrări';
-        };
-
-        videoPreview.onended = function() {
-            stopPlayback();
-            showToast('Playback terminat', 'info');
-        };
 
         // Rulează video cu subtitrări sincronizate
         function playVideoWithSubtitles() {
@@ -3645,14 +3655,35 @@
         }
         
         function startPlayback() {
-            if (videoPreviewUrl && videoPreview.src) {
-                console.log('Starting video playback...');
-                videoPreview.play().catch(e => {
+            // Verificăm dacă avem o sursă video validă
+            const hasVideo = videoPreview.src && !videoPreview.src.endsWith('/') && !videoPreview.src.includes('localhost:5000');
+            // Notă: browserul pune uneori URL-ul bazei dacă src e gol. Verificăm și videoPreviewUrl.
+
+            if (videoPreviewUrl || (videoPreview.src && videoPreview.src !== window.location.href)) {
+                console.log('Starting video playback for src:', videoPreview.src);
+
+                // Asigură-te că containerul e vizibil
+                videoPreviewContainer.style.display = 'block';
+                videoPreview.style.display = 'block';
+
+                if (videoPreview.ended) {
+                    videoPreview.currentTime = 0;
+                }
+
+                videoPreview.play().then(() => {
+                    console.log('Video play command successful');
+                }).catch(e => {
                     console.error('Playback error:', e);
-                    showToast('Eroare la pornirea video-ului. Verifică tunnel-ul.', 'error');
+                    showToast('Browser-ul a blocat redarea sau video-ul nu s-a încărcat.', 'error');
+
+                    // Fallback la simulare dacă video-ul nu vrea să pornească deloc
+                    if (!videoPlaying) {
+                        console.log('Falling back to simulated playback');
+                        startSimulatedPlayback();
+                    }
                 });
             } else {
-                console.log('Starting simulated playback...');
+                console.log('No video source, starting simulated playback');
                 videoPlaying = true;
                 playVideoBtn.innerHTML = '<i class="fas fa-pause"></i> Pauză';
                 startSimulatedPlayback();
@@ -3683,7 +3714,15 @@
         }
         
         function updateCurrentSubtitle(currentTime) {
-            if (!currentSegments || currentSegments.length === 0) return;
+            if (!currentSegments || currentSegments.length === 0) {
+                if (videoPlaying && Math.random() < 0.01) console.warn('No segments available for sync');
+                return;
+            }
+
+            // Debugging ocazional (la fiecare 10 secunde de video)
+            if (Math.floor(currentTime) % 10 === 0 && Math.random() < 0.05) {
+                console.log(`Sync check: time=${currentTime.toFixed(2)}, segments=${currentSegments.length}`);
+            }
 
             const segment = currentSegments.find(s => 
                 currentTime >= s.start && currentTime <= s.end
@@ -3692,6 +3731,7 @@
             if (segment) {
                 const segmentIndex = currentSegments.indexOf(segment);
                 if (segmentIndex !== currentSegmentIndex) {
+                    console.log('New segment:', segmentIndex, segment.text.substring(0, 20) + '...');
                     currentSegmentIndex = segmentIndex;
                     currentSubtitle.textContent = segment.text;
                     subtitleTimestamp.textContent = `${segment.start_formatted} → ${segment.end_formatted}`;
@@ -3700,7 +3740,7 @@
                     highlightCurrentSegment(segmentIndex);
                 }
             } else {
-                if (currentSubtitle.textContent !== '') {
+                if (currentSubtitle.textContent !== '' || subtitleOverlay.style.display !== 'none') {
                     currentSubtitle.textContent = '';
                     subtitleTimestamp.textContent = '';
                     subtitleOverlay.style.display = 'none';
@@ -3722,13 +3762,12 @@
         }
         
         function stopPlayback() {
+            console.log('Stopping playback');
             videoPlaying = false;
             playVideoBtn.innerHTML = '<i class="fas fa-play"></i> Play cu Subtitrări';
             
-            if (videoPreviewUrl && videoPreview.pause) {
+            if (videoPreview) {
                 videoPreview.pause();
-                videoPreview.ontimeupdate = null;
-                videoPreview.onended = null;
             }
             
             if (videoPlayInterval) {
