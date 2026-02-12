@@ -249,30 +249,10 @@ def load_translation_model(source_lang, target_lang):
             device = "cuda" if torch.cuda.is_available() else "cpu"
             
             # MODELE SPECIFICE PENTRU FIECARE PERECHE
-            model_map = {
-                # Română <-> Engleză (cele mai importante)
-                'en-ro': 'Helsinki-NLP/opus-mt-en-ro',
-                'ro-en': 'Helsinki-NLP/opus-mt-ROMANCE-en',  # Model pentru limbi romanice -> engleză
-
-                # Alte perechi comune
-                'en-fr': 'Helsinki-NLP/opus-mt-en-fr',
-                'fr-en': 'Helsinki-NLP/opus-mt-fr-en',
-                'en-de': 'Helsinki-NLP/opus-mt-en-de',
-                'de-en': 'Helsinki-NLP/opus-mt-de-en',
-                'en-es': 'Helsinki-NLP/opus-mt-en-es',
-                'es-en': 'Helsinki-NLP/opus-mt-es-en',
-                'en-it': 'Helsinki-NLP/opus-mt-en-it',
-                'it-en': 'Helsinki-NLP/opus-mt-it-en',
-                'en-ru': 'Helsinki-NLP/opus-mt-en-ru',
-                'ru-en': 'Helsinki-NLP/opus-mt-ru-en',
-                'en-sk': 'Helsinki-NLP/opus-mt-en-sk',
-                'sk-en': 'Helsinki-NLP/opus-mt-sk-en',
-                'en-sl': 'Helsinki-NLP/opus-mt-en-sl',
-                'sl-en': 'Helsinki-NLP/opus-mt-sl-en',
-
-                # Pentru perechi mai rare, folosește M2M100
-                # 'default': 'facebook/m2m100_418M'
-            }
+            model_map = TRANSLATION_MODELS_CONFIG['marian']['models'].copy()
+            # Mapare specială pentru Romanian -> English (ROMANCE-en include ro)
+            if 'ro-en' not in model_map:
+                model_map['ro-en'] = 'Helsinki-NLP/opus-mt-ROMANCE-en'
             
             if model_key in model_map:
                 model_name = model_map[model_key]
@@ -282,17 +262,13 @@ def load_translation_model(source_lang, target_lang):
                 model = MarianMTModel.from_pretrained(model_name).to(device)
                 model_type = 'marian'
             else:
-                # Fallback la M2M100 pentru perechi rare
-                model_name = 'facebook/m2m100_418M'
-                print(f"Încarc modelul M2M100: {model_name}")
+                # Fallback la NLLB-200 (mai modern și suportă mai multe limbi)
+                model_name = TRANSLATION_MODELS_CONFIG['nllb']['name']
+                print(f"Încarc modelul NLLB-200: {model_name}")
                 
-                from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
-                tokenizer = M2M100Tokenizer.from_pretrained(model_name)
-                model = M2M100ForConditionalGeneration.from_pretrained(model_name).to(device)
-
-                # Setează limba sursă
-                tokenizer.src_lang = source_lang
-                model_type = 'm2m100'
+                tokenizer = AutoTokenizer.from_pretrained(model_name)
+                model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+                model_type = 'nllb'
             
             load_time = time.time() - start_time
             
@@ -324,12 +300,10 @@ def load_translation_model(source_lang, target_lang):
                     model = MarianMTModel.from_pretrained(model_name).to(device)
                     model_type = 'marian'
                 else:
-                    model_name = 'facebook/m2m100_418M'
-                    from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
-                    tokenizer = M2M100Tokenizer.from_pretrained(model_name)
-                    model = M2M100ForConditionalGeneration.from_pretrained(model_name).to(device)
-                    tokenizer.src_lang = source_lang
-                    model_type = 'm2m100'
+                    model_name = TRANSLATION_MODELS_CONFIG['nllb']['name']
+                    tokenizer = AutoTokenizer.from_pretrained(model_name)
+                    model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+                    model_type = 'nllb'
                 
                 translation_models[model_key] = {
                     'model': model,
@@ -380,18 +354,30 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
                     translated = model.generate(**inputs, max_length=512, num_beams=4, early_stopping=True)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
                     
-                elif model_type == 'm2m100':
-                    # M2M100
+                elif model_type == 'nllb':
+                    # NLLB-200
+                    src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
+                    tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
+
+                    if hasattr(tokenizer, 'src_lang'):
+                        tokenizer.src_lang = src_code
+
+                    forced_bos_token_id = None
+                    try:
+                        if hasattr(tokenizer, 'get_lang_id'):
+                            forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
+                        elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
+                            forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
+                    except:
+                        pass
+
                     inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
                     
-                    # Generează traducerea cu limba țintă specificată
-                    translated = model.generate(
-                        **inputs,
-                        forced_bos_token_id=tokenizer.get_lang_id(target_lang),
-                        max_length=512,
-                        num_beams=4,
-                        early_stopping=True
-                    )
+                    gen_kwargs = {"max_length": 512, "num_beams": 4, "early_stopping": True}
+                    if forced_bos_token_id is not None:
+                        gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
+
+                    translated = model.generate(**inputs, **gen_kwargs)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
                 
                 else:
@@ -1273,6 +1259,7 @@ def process_large_file(file_path, model_name, language, translation_target,
             print(f"Durata totală: {duration:.1f}s, Chunks: {total_chunks}")
 
             all_segments = []
+            detected_language = language
 
             # Procesează fiecare chunk din fișierul audio extras
             for chunk_idx in range(total_chunks):
@@ -1313,6 +1300,12 @@ def process_large_file(file_path, model_name, language, translation_target,
                     transcribe_kwargs['language'] = language
                 
                 chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
+
+                # Capture detected language from the first chunk if in auto mode
+                if chunk_idx == 0 and language == 'auto':
+                    detected_language = chunk_result.get('language', 'en')
+                    print(f"Limbă detectată de Whisper: {detected_language}")
+
                 chunk_segments = chunk_result.get('segments', [])
 
                 if not chunk_segments:
@@ -1334,7 +1327,7 @@ def process_large_file(file_path, model_name, language, translation_target,
                 segments = adjust_segmentation_algorithm(segments)
 
             return {
-                'result': {'text': " ".join([s['text'] for s in segments]), 'language': language},
+                'result': {'text': " ".join([s['text'] for s in segments]), 'language': detected_language},
                 'segments': segments,
                 'transcribe_time': 0
             }
@@ -1640,14 +1633,27 @@ def background_processing_task(original_path, model_name, language, translation_
 
         # Preview video
         video_preview_url = None
-        is_video = any(original_path.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mov', '.mkv', '.mxf'])
+        image_preview_url = None
+        is_video = any(original_path.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mov', '.mkv', '.mxf', '.m4v', '.webm', '.flv', '.wmv'])
+
         if is_video:
-            update_task_status(process_id, 'processing', 95, 'Pregătire video pentru playback...')
-            playback_path = convert_to_mp4_for_playback(original_path, process_dir, process_id)
-            if playback_path:
-                video_filename = f"video_playback_{process_id}.mp4"
-                shutil.copy2(playback_path, os.path.join(app.config['UPLOAD_FOLDER'], video_filename))
-                video_preview_url = f'/video_file/{video_filename}'
+            update_task_status(process_id, 'processing', 95, 'Pregătire preview...')
+            try:
+                # Extrage imagine preview (JPG)
+                preview_path = extract_video_preview(original_path, process_dir)
+                if preview_path:
+                    preview_filename = f"preview_{process_id}.jpg"
+                    shutil.copy2(preview_path, os.path.join(app.config['UPLOAD_FOLDER'], preview_filename))
+                    image_preview_url = f'/preview_image/{preview_filename}'
+
+                # Pregătește video pentru playback (MP4)
+                playback_path = convert_to_mp4_for_playback(original_path, process_dir, process_id)
+                if playback_path:
+                    video_filename = f"video_playback_{process_id}.mp4"
+                    shutil.copy2(playback_path, os.path.join(app.config['UPLOAD_FOLDER'], video_filename))
+                    video_preview_url = f'/video_file/{video_filename}'
+            except Exception as preview_err:
+                print(f"Eroare la generarea preview-ului: {str(preview_err)}")
 
         final_result = {
             'success': True,
@@ -1657,6 +1663,7 @@ def background_processing_task(original_path, model_name, language, translation_
             'translation_used': translation_used,
             'process_id': process_id,
             'video_preview_url': video_preview_url,
+            'image_preview_url': image_preview_url,
             'is_video': is_video,
             'model_used': model_name,
             'processing_time': 'Finalizat'
@@ -1851,13 +1858,13 @@ def set_model():
         if model_name in AVAILABLE_MODELS:
             session['selected_model'] = model_name
             
-            def load_in_background():
+            def load_in_background(name):
                 try:
-                    load_model(model_name)
+                    load_model(name)
                 except Exception as e:
-                    print(f"Eroare la încărcarea în background a modelului {model_name}: {str(e)}")
+                    print(f"Eroare la încărcarea în background a modelului {name}: {str(e)}")
             
-            thread = threading.Thread(target=load_in_background)
+            thread = threading.Thread(target=load_in_background, args=(model_name,))
             thread.daemon = True
             thread.start()
             
@@ -1905,16 +1912,16 @@ def set_translation_target():
             })
         elif target_language in TRANSLATION_LANGUAGES:
             session['translation_target'] = target_language
+            current_lang = session.get('selected_language', 'auto')
             
-            def load_translation_background():
+            def load_translation_background(src, tgt):
                 try:
-                    current_lang = session.get('selected_language', 'auto')
-                    if current_lang != 'auto':
-                        load_translation_model(current_lang, target_language)
+                    if src != 'auto':
+                        load_translation_model(src, tgt)
                 except Exception as e:
                     print(f"Eroare la încărcarea modelului de traducere: {str(e)}")
             
-            thread = threading.Thread(target=load_translation_background)
+            thread = threading.Thread(target=load_translation_background, args=(current_lang, target_language))
             thread.daemon = True
             thread.start()
             
@@ -2310,6 +2317,24 @@ def video_file(filename):
         )
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/check_video/<process_id>')
+def check_video(process_id):
+    """Verifică dacă există un fișier video pentru preview"""
+    try:
+        filename = f"video_playback_{process_id}.mp4"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+        if os.path.exists(filepath):
+            duration = get_video_duration(filepath)
+            return jsonify({
+                'success': True,
+                'video_url': f'/video_file/{filename}',
+                'duration': duration
+            })
+        return jsonify({'success': False})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/segments_json/<process_id>/<filename>')
 def segments_json(process_id, filename):
