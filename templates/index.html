@@ -1969,9 +1969,16 @@
             });
 
             videoPreview.addEventListener('play', function() {
-                console.log('Video started playing');
+                console.log('Video started playing. Current segments:', currentSegments ? currentSegments.length : 0);
                 videoPlaying = true;
                 playVideoBtn.innerHTML = '<i class="fas fa-pause"></i> Pauză';
+
+                // Dacă suntem în playback simulat și a pornit video-ul real, oprim simulatorul
+                if (videoPlayInterval) {
+                    console.log('Switching from simulated to real video sync');
+                    clearInterval(videoPlayInterval);
+                    videoPlayInterval = null;
+                }
             });
 
             videoPreview.addEventListener('pause', function() {
@@ -1988,6 +1995,12 @@
             videoPreview.addEventListener('error', function(e) {
                 console.error('Video element error:', videoPreview.error);
                 showToast('Eroare la încărcarea video-ului. Verificați conexiunea tunnel.', 'error');
+            });
+
+            // Listener pentru butonul de play de sub video
+            playVideoBtn.addEventListener('click', function() {
+                console.log('Play button under video clicked');
+                playVideoWithSubtitles();
             });
 
             // Afișează un mesaj de bun venit
@@ -3655,11 +3668,14 @@
         }
         
         function startPlayback() {
-            // Verificăm dacă avem o sursă video validă
-            const hasVideo = videoPreview.src && !videoPreview.src.endsWith('/') && !videoPreview.src.includes('localhost:5000');
-            // Notă: browserul pune uneori URL-ul bazei dacă src e gol. Verificăm și videoPreviewUrl.
+            console.log('startPlayback called. videoPreviewUrl:', videoPreviewUrl, 'videoPreview.src:', videoPreview.src);
 
-            if (videoPreviewUrl || (videoPreview.src && videoPreview.src !== window.location.href)) {
+            // Verificăm dacă avem o sursă video validă
+            const currentSrc = videoPreview.src;
+            const isBaseUrl = currentSrc === window.location.href || currentSrc === window.location.href + '/';
+            const hasRealSrc = currentSrc && !isBaseUrl && !currentSrc.startsWith('blob:');
+
+            if (videoPreviewUrl || hasRealSrc) {
                 console.log('Starting video playback for src:', videoPreview.src);
 
                 // Asigură-te că containerul e vizibil
@@ -3715,8 +3731,14 @@
         
         function updateCurrentSubtitle(currentTime) {
             if (!currentSegments || currentSegments.length === 0) {
-                if (videoPlaying && Math.random() < 0.01) console.warn('No segments available for sync');
-                return;
+                // Încearcă să recupereze din originalSegments dacă currentSegments e gol
+                if (originalSegments && originalSegments.length > 0) {
+                    console.log('Sync: currentSegments was empty, using originalSegments');
+                    currentSegments = originalSegments;
+                } else {
+                    if (videoPlaying && Math.random() < 0.01) console.warn('No segments available for sync');
+                    return;
+                }
             }
 
             // Debugging ocazional (la fiecare 10 secunde de video)
@@ -3724,14 +3746,16 @@
                 console.log(`Sync check: time=${currentTime.toFixed(2)}, segments=${currentSegments.length}`);
             }
 
-            const segment = currentSegments.find(s => 
-                currentTime >= s.start && currentTime <= s.end
-            );
+            const segment = currentSegments.find(s => {
+                const start = parseFloat(s.start);
+                const end = parseFloat(s.end);
+                return currentTime >= start && currentTime <= end;
+            });
             
             if (segment) {
                 const segmentIndex = currentSegments.indexOf(segment);
                 if (segmentIndex !== currentSegmentIndex) {
-                    console.log('New segment:', segmentIndex, segment.text.substring(0, 20) + '...');
+                    console.log(`Subtitle active: [${segment.start_formatted} -> ${segment.end_formatted}] ${segment.text.substring(0, 30)}...`);
                     currentSegmentIndex = segmentIndex;
                     currentSubtitle.textContent = segment.text;
                     subtitleTimestamp.textContent = `${segment.start_formatted} → ${segment.end_formatted}`;
