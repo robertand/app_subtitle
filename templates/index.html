@@ -1391,22 +1391,6 @@
             </div>
         </div>
         
-        <!-- Upload Method Selector -->
-        <div class="upload-method-selector">
-            <h3><i class="fas fa-upload"></i> Selectează Metoda de Upload</h3>
-            <div class="method-buttons">
-                <div class="method-btn active" id="simpleUploadBtn" onclick="selectUploadMethod('simple')">
-                    <div class="method-icon"><i class="fas fa-bolt"></i></div>
-                    <div class="method-name">Upload Simplu</div>
-                    <div class="method-desc">Pentru fișiere mici (&lt;500MB)</div>
-                </div>
-                <div class="method-btn" id="chunkedUploadBtn" onclick="selectUploadMethod('chunked')">
-                    <div class="method-icon"><i class="fas fa-layer-group"></i></div>
-                    <div class="method-name">Upload Segmentat</div>
-                    <div class="method-desc">Pentru fișiere mari (până la 50GB)</div>
-                </div>
-            </div>
-        </div>
         
         <!-- Chunked Upload Progress -->
         <div class="chunked-upload-progress" id="chunkedUploadProgress">
@@ -1583,7 +1567,6 @@
                 <strong>Setări curente:</strong>
                 <span class="status-badge" id="currentModel">small</span>
                 <span class="status-badge" id="currentLanguage">auto</span>
-                <span class="status-badge" id="uploadMethod">Simplu</span>
                 <span class="status-badge" id="translationBadge" style="display: none;">
                     <i class="fas fa-language"></i> Traducere
                 </span>
@@ -1812,8 +1795,7 @@
         let multipleTranslations = {};
         let currentTranslationLang = null;
         
-        // Variabile pentru upload segmentat
-        let uploadMethod = 'simple'; // 'simple' sau 'chunked'
+        // Variabile pentru upload segmentat (acum singura metodă)
         let chunkedUploadSession = null;
         let uploadStartTime = null;
         let uploadPaused = false;
@@ -1835,7 +1817,6 @@
         const errorArea = document.getElementById('errorArea');
         const currentModelElement = document.getElementById('currentModel');
         const currentLanguageElement = document.getElementById('currentLanguage');
-        const uploadMethodElement = document.getElementById('uploadMethod');
         const translationBadge = document.getElementById('translationBadge');
         const segmentationStatusElement = document.getElementById('segmentationStatus');
         const modelGrid = document.getElementById('modelGrid');
@@ -1898,8 +1879,6 @@
         const saveEditsBtn = document.getElementById('saveEditsBtn');
         
         // Elemente pentru upload segmentat
-        const simpleUploadBtn = document.getElementById('simpleUploadBtn');
-        const chunkedUploadBtn = document.getElementById('chunkedUploadBtn');
         const chunkedUploadProgress = document.getElementById('chunkedUploadProgress');
         const uploadProgressFill = document.getElementById('uploadProgressFill');
         const uploadFileName = document.getElementById('uploadFileName');
@@ -1923,7 +1902,6 @@
         document.addEventListener('DOMContentLoaded', function() {
             updateCurrentModel();
             updateCurrentLanguage();
-            updateUploadMethod();
             updateSegmentationStatus();
             loadModels();
             loadLanguages();
@@ -2005,7 +1983,7 @@
 
             // Afișează un mesaj de bun venit
             setTimeout(() => {
-                showToast(`Aplicația este gata! Upload: ${uploadMethod === 'simple' ? 'Simplu' : 'Segmentat'}`, 'success');
+                showToast(`Aplicația este gata!`, 'success');
 
                 // Încearcă să restaurezi starea anterioară dacă există un processId în sesiune
                 const savedProcessId = '{{ session.get("process_id", "") }}';
@@ -2081,38 +2059,9 @@
             } catch (e) {}
         }
         
-        // Selectează metoda de upload
-        function selectUploadMethod(method) {
-            uploadMethod = method;
-            
-            if (method === 'simple') {
-                simpleUploadBtn.classList.add('active');
-                chunkedUploadBtn.classList.remove('active');
-                chunkedUploadProgress.style.display = 'none';
-                fileInfo.textContent = 'Upload Simplu: <500MB • Upload Segmentat: până la 50GB';
-            } else {
-                simpleUploadBtn.classList.remove('active');
-                chunkedUploadBtn.classList.add('active');
-                fileInfo.textContent = 'Upload Segmentat: Chunks de 10MB • Suport până la 50GB';
-            }
-            
-            updateUploadMethod();
-            
-            // Dacă există deja un fișier selectat, verifică compatibilitatea
-            if (selectedFile) {
-                checkFileCompatibility();
-            }
-        }
-        
-        function updateUploadMethod() {
-            uploadMethodElement.textContent = uploadMethod === 'simple' ? 'Simplu' : 'Segmentat';
-            uploadMethodElement.title = `Metoda curentă: ${uploadMethod === 'simple' ? 'Upload simplu' : 'Upload segmentat'}`;
-        }
-        
         // Funcție de debugging
         function debugInfo() {
             console.log('=== DEBUG INFO ===');
-            console.log('Upload method:', uploadMethod);
             console.log('Selected file:', selectedFile ? {
                 name: selectedFile.name,
                 size: formatFileSize(selectedFile.size),
@@ -2578,8 +2527,8 @@
             isVideoFile = isSupportedVideo;
             isMp4File = fileName.endsWith('.mp4');
             
-            // Verifică compatibilitatea cu metoda de upload selectată
-            checkFileCompatibility();
+            // Pregătește întotdeauna upload-ul segmentat
+            prepareChunkedUpload();
             
             uploadText.innerHTML = `<i class="fas fa-file-alt"></i> ${file.name} (${formatFileSize(file.size)})`;
             
@@ -2598,47 +2547,15 @@
             videoPreview.src = '';
             imagePreview.src = '';
             
+            // Activează butoanele
+            processBtn.disabled = false;
+            quickPreviewBtn.disabled = false;
+
             // Extrage preview video dacă e fișier video și nu e prea mare
             if (isVideoFile && file.size < 100 * 1024 * 1024) { // <100MB pentru preview
                 extractVideoPreview(file);
             } else {
                 formatInfo.style.display = 'none';
-            }
-        }
-        
-        // Verifică compatibilitatea fișierului cu metoda de upload
-        function checkFileCompatibility() {
-            const fileSize = selectedFile.size;
-            
-            // Ascunde toate warning-urile inițial
-            sizeWarning.style.display = 'none';
-            fallbackOptions.style.display = 'none';
-            chunkedUploadProgress.style.display = 'none';
-            
-            // Verifică dacă fișierul e prea mare pentru upload simplu
-            if (fileSize > maxSimpleSize) {
-                if (uploadMethod === 'simple') {
-                    // Fișier prea mare pentru upload simplu
-                    fallbackOptions.style.display = 'block';
-                    processBtn.disabled = true;
-                    quickPreviewBtn.disabled = true;
-                    return;
-                } else {
-                    // Upload segmentat - afișează warning
-                    sizeWarning.style.display = 'block';
-                }
-            } else if (fileSize > 100 * 1024 * 1024) { // >100MB
-                // Afișează recomandare pentru upload segmentat
-                sizeWarning.style.display = 'block';
-            }
-            
-            // Activează butoanele
-            processBtn.disabled = false;
-            quickPreviewBtn.disabled = false;
-            
-            // Pentru upload segmentat, pregătește interfața
-            if (uploadMethod === 'chunked' && fileSize > maxSimpleSize) {
-                prepareChunkedUpload();
             }
         }
         
@@ -2724,12 +2641,6 @@
         async function quickPreview() {
             if (!selectedFile) return;
             
-            // Pentru fișiere mari, folosește upload segmentat
-            if (selectedFile.size > maxSimpleSize && uploadMethod === 'simple') {
-                showToast('Fișier prea mare pentru previzualizare rapidă. Folosește upload segmentat.', 'warning');
-                return;
-            }
-            
             hideError();
             segmentsPreview.style.display = 'block';
             previewContent.innerHTML = '<p><i class="fas fa-spinner fa-spin"></i> Se procesează previzualizarea...</p>';
@@ -2786,88 +2697,8 @@
         async function processFile() {
             if (!selectedFile) return;
             
-            // Pentru fișiere mari cu upload simplu, arată opțiuni
-            if (selectedFile.size > maxSimpleSize && uploadMethod === 'simple') {
-                fallbackOptions.style.display = 'block';
-                return;
-            }
-            
-            // Pentru upload segmentat
-            if (uploadMethod === 'chunked' && selectedFile.size > maxSimpleSize) {
-                startChunkedUpload();
-                return;
-            }
-            
-            // Pentru upload simplu (fișiere mici)
-            processSimpleUpload();
-        }
-        
-        // Procesează upload simplu
-        async function processSimpleUpload() {
-            hideError();
-            resultContainer.style.display = 'none';
-            segmentsPreview.style.display = 'none';
-            loading.style.display = 'block';
-            processBtn.disabled = true;
-            quickPreviewBtn.disabled = true;
-            progressContainer.style.display = 'block';
-            processingInfo.style.display = 'none';
-            formatInfo.style.display = 'none';
-            
-            if (translationEnabled) {
-                loadingTranslationInfo.style.display = 'block';
-                translationProgress.style.display = 'block';
-            } else {
-                loadingTranslationInfo.style.display = 'none';
-                translationProgress.style.display = 'none';
-            }
-            
-            updateProgress(0, 'Se pregătește...');
-            updateTranslationProgress(0, 'Se pregătește traducerea...');
-            
-            const formData = new FormData();
-            formData.append('file', selectedFile);
-            formData.append('model', currentModel);
-            formData.append('language', currentLanguage);
-            formData.append('translation_target', translationTarget || '');
-            formData.append('adjust_segmentation', adjustSegmentationCheckbox.checked);
-            formData.append('extract_audio_only', extractAudioOnlyCheckbox.checked);
-            
-            try {
-                updateProgress(10, 'Se încarcă fișierul...');
-                
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    processId = data.process_id;
-                    pollTaskStatus(processId);
-                } else {
-                    if (data.use_chunked_upload) {
-                        showToast('Fișier prea mare. Se recomandă upload segmentat.', 'warning');
-                        fallbackOptions.style.display = 'block';
-                        loading.style.display = 'none';
-                        progressContainer.style.display = 'none';
-                        processBtn.disabled = false;
-                        quickPreviewBtn.disabled = false;
-                    } else {
-                        throw new Error(data.error || 'Eroare necunoscută');
-                    }
-                }
-                
-            } catch (error) {
-                loading.style.display = 'none';
-                progressContainer.style.display = 'none';
-                translationProgress.style.display = 'none';
-                loadingTranslationInfo.style.display = 'none';
-                showError(`Eroare: ${error.message}`);
-                processBtn.disabled = false;
-                quickPreviewBtn.disabled = false;
-            }
+            // Toate fișierele folosesc acum upload segmentat
+            startChunkedUpload();
         }
         
         // Începe upload segmentat
@@ -3105,17 +2936,8 @@
         }
         
         // Funcții helper pentru procesare
-        function switchToChunkedUpload() {
-            selectUploadMethod('chunked');
-            fallbackOptions.style.display = 'none';
-            checkFileCompatibility();
-        }
-        
         function extractAudioOnly() {
             extractAudioOnlyCheckbox.checked = true;
-            if (selectedFile && selectedFile.size > maxSimpleSize) {
-                switchToChunkedUpload();
-            }
             showToast('S-a activat modul "Doar extragere audio". Click pe Start.', 'info');
         }
         
@@ -3141,10 +2963,32 @@
                     console.error('Task reported an error:', data.message);
                     throw new Error(data.message || 'Eroare la procesare în background');
                 } else {
+                    // Verifică heartbeat
+                    if (data.last_heartbeat) {
+                        const now = Date.now() / 1000;
+                        const diff = now - data.last_heartbeat;
+                        if (diff > 180) { // Mai mult de 3 minute fără update
+                            console.warn('Task heartbeat too old:', diff, 'seconds');
+                            updateProgress(data.progress || 50, `Atenție: Procesarea durează mai mult (${Math.floor(diff)}s fără răspuns)...`);
+                        }
+                    }
+
+                    // Arată containerul de progres dacă suntem în faza de procesare
+                    progressContainer.style.display = 'block';
+
                     // Update progress UI
                     if (data.status === 'processing') {
                         updateProgress(data.progress || 50, data.message || 'Se procesează...');
-                        if (uploadStatus) uploadStatus.textContent = data.message;
+                        if (uploadStatus) {
+                            uploadStatus.textContent = data.message;
+                            uploadStatus.style.color = '#667eea';
+                        }
+
+                        // Dacă suntem la transcriere pe chunks, animăm ceva
+                        if (data.message && data.message.includes('Transcriere: chunk')) {
+                            loading.querySelector('p').innerHTML = `<i class="fas fa-cog fa-spin"></i> ${data.message}`;
+                            document.getElementById('processingChunksInfo').style.display = 'block';
+                        }
                     } else if (data.status === 'queued') {
                         updateProgress(5, 'În coadă...');
                     }
