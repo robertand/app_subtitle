@@ -3130,7 +3130,7 @@
                     const pid = data.process_id || processId;
                     console.log('Fetching segments for process:', pid);
 
-                    const segResp = await fetch(`/segments_json/${pid}/original_segments.json`);
+                    const segResp = await fetch(`/segments_json/${pid}/original_segments.json?t=${Date.now()}`);
                     if (segResp.ok) {
                         const segData = await segResp.json();
                         originalSegments = segData.segments;
@@ -3139,11 +3139,12 @@
                     }
 
                     if (data.translation_used) {
-                        const transResp = await fetch(`/segments_json/${pid}/translated_segments_${data.translation_used}.json`);
+                        const transResp = await fetch(`/segments_json/${pid}/translated_segments_${data.translation_used}.json?t=${Date.now()}`);
                         if (transResp.ok) {
                             const transData = await transResp.json();
                             translatedSegments = transData.segments;
-                            console.log('Translated segments loaded:', translatedSegments.length);
+                            currentSegments = translatedSegments; // Implicit arată traducerea dacă a fost cerută
+                            console.log('Translated segments loaded and set as current:', translatedSegments.length);
                         }
                     }
                 }
@@ -3236,7 +3237,10 @@
             // Actualizează video preview dacă există
             if (data.is_video) {
                 if (videoPreviewUrl) {
-                    videoPreview.src = videoPreviewUrl;
+                    console.log('Setting video preview src:', videoPreviewUrl);
+                    // Adăugăm un timestamp pentru a forța reîncărcarea prin tunnel/cache
+                    videoPreview.src = videoPreviewUrl + '?t=' + Date.now();
+                    videoPreview.load(); // Forțează încărcarea
                     videoPreview.style.display = 'block';
                     imagePreview.style.display = 'none';
                     
@@ -3351,6 +3355,13 @@
                 const isTranslated = segment.original === false;
                 const targetLang = segment.target_language || 'unknown';
                 
+                // Căutăm textul original dacă suntem pe o traducere
+                let originalText = "";
+                if (isTranslated && originalSegments.length > 0) {
+                    const orig = originalSegments.find(s => s.id === segment.id);
+                    if (orig) originalText = orig.text;
+                }
+
                 segmentsHtml += `
                     <div class="segment" data-start="${segment.start}" data-end="${segment.end}">
                         <div class="segment-header">
@@ -3359,6 +3370,11 @@
                             ${isTranslated ? `<span class="language-badge target">${targetLang}</span>` : ''}
                         </div>
                         <div class="segment-text" contenteditable="true" onblur="updateSegmentLocal(${segment.id}, this.innerText)">${segment.text}</div>
+                        ${isTranslated && originalText ? `
+                            <div class="segment-translation" style="margin-top: 5px; opacity: 0.7; font-size: 0.9em; border-top: 1px solid #eee; padding-top: 5px;">
+                                <div style="color: #718096;"><i class="fas fa-quote-left"></i> ${originalText}</div>
+                            </div>
+                        ` : ''}
                     </div>
                 `;
             });
@@ -3592,9 +3608,31 @@
             showToast(`Descărcarea pentru ${langCode} va fi implementată în curând.`, 'info');
         }
         
+        // Event listeners permanente pentru video
+        videoPreview.ontimeupdate = function() {
+            const currentTime = videoPreview.currentTime;
+            currentTimeElement.textContent = formatTime(currentTime);
+            updateCurrentSubtitle(currentTime);
+        };
+
+        videoPreview.onplay = function() {
+            videoPlaying = true;
+            playVideoBtn.innerHTML = '<i class="fas fa-pause"></i> Pauză';
+        };
+
+        videoPreview.onpause = function() {
+            videoPlaying = false;
+            playVideoBtn.innerHTML = '<i class="fas fa-play"></i> Play cu Subtitrări';
+        };
+
+        videoPreview.onended = function() {
+            stopPlayback();
+            showToast('Playback terminat', 'info');
+        };
+
         // Rulează video cu subtitrări sincronizate
         function playVideoWithSubtitles() {
-            if (!currentSegments.length) {
+            if (!currentSegments || !currentSegments.length) {
                 showToast('Nu există subtitrări pentru a fi afișate', 'error');
                 return;
             }
@@ -3607,24 +3645,16 @@
         }
         
         function startPlayback() {
-            videoPlaying = true;
-            playVideoBtn.innerHTML = '<i class="fas fa-pause"></i> Pauză';
-            
             if (videoPreviewUrl && videoPreview.src) {
-                videoPreview.currentTime = 0;
-                videoPreview.play();
-                
-                videoPreview.ontimeupdate = function() {
-                    const currentTime = videoPreview.currentTime;
-                    currentTimeElement.textContent = formatTime(currentTime);
-                    updateCurrentSubtitle(currentTime);
-                };
-                
-                videoPreview.onended = function() {
-                    stopPlayback();
-                    showToast('Playback terminat', 'info');
-                };
+                console.log('Starting video playback...');
+                videoPreview.play().catch(e => {
+                    console.error('Playback error:', e);
+                    showToast('Eroare la pornirea video-ului. Verifică tunnel-ul.', 'error');
+                });
             } else {
+                console.log('Starting simulated playback...');
+                videoPlaying = true;
+                playVideoBtn.innerHTML = '<i class="fas fa-pause"></i> Pauză';
                 startSimulatedPlayback();
             }
         }
@@ -3653,6 +3683,8 @@
         }
         
         function updateCurrentSubtitle(currentTime) {
+            if (!currentSegments || currentSegments.length === 0) return;
+
             const segment = currentSegments.find(s => 
                 currentTime >= s.start && currentTime <= s.end
             );
