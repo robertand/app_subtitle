@@ -724,7 +724,7 @@ def run_ffmpeg_with_progress(cmd, process_id, task_name, total_duration=None):
 
     process = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL, # Redirecționăm stdout către DEVNULL pentru a evita deadlock-ul pe pipe
         stderr=subprocess.PIPE,
         universal_newlines=True
     )
@@ -980,12 +980,13 @@ def convert_to_mp4_for_playback(video_path, output_dir, process_id=None):
         duration = get_video_duration(video_path)
         
         # Verifică dacă NVENC este disponibil pentru accelerare hardware
-        if is_nvenc_available():
+        use_nvenc = is_nvenc_available()
+
+        if use_nvenc:
             print("Folosesc accelerare hardware NVENC pentru preview...")
             cmd = [
                 'ffmpeg',
                 '-hwaccel', 'cuda',
-                '-hwaccel_output_format', 'cuda',
                 '-i', video_path,
                 '-c:v', 'h264_nvenc',
                 '-preset', 'p1',          # Cel mai rapid preset NVENC
@@ -995,17 +996,31 @@ def convert_to_mp4_for_playback(video_path, output_dir, process_id=None):
                 '-y',
                 output_path
             ]
-        else:
-            cmd = [
-                'ffmpeg',
-                '-i', video_path,
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',   # Mai rapid pentru preview software
-                '-c:a', 'aac',
-                '-movflags', '+faststart',
-                '-y',
-                output_path
-            ]
+
+            try:
+                if process_id:
+                    run_ffmpeg_with_progress(cmd, process_id, "Pregătire video (MP4)", duration)
+                else:
+                    subprocess.run(cmd, capture_output=True, check=True)
+
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    return output_path
+                print("NVENC a eșuat sau a produs un fișier gol. Încerc fallback software...")
+            except Exception as e:
+                print(f"Eroare la NVENC: {e}. Încerc fallback software...")
+
+        # Fallback sau software encoding implicit
+        print("Folosesc encoding software pentru preview...")
+        cmd = [
+            'ffmpeg',
+            '-i', video_path,
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',   # Mai rapid pentru preview software
+            '-c:a', 'aac',
+            '-movflags', '+faststart',
+            '-y',
+            output_path
+        ]
         
         if process_id:
             run_ffmpeg_with_progress(cmd, process_id, "Pregătire video (MP4)", duration)
@@ -1490,6 +1505,12 @@ def process_large_file(file_path, model_name, language, translation_target,
 
             if should_adjust_segmentation:
                 segments = adjust_segmentation_algorithm(segments)
+
+            # Asigurăm o curățenie finală a timpiilor pentru a evita suprapunerile între chunk-uri
+            for i in range(len(segments) - 1):
+                if segments[i]['end'] > segments[i+1]['start']:
+                    # Dacă există suprapunere, tăiem sfârșitul segmentului curent la începutul următorului
+                    segments[i]['end'] = segments[i+1]['start']
 
             # Determinăm limbile predominante pentru raportare
             lang_counter = Counter([item['language'] for item in language_per_chunk])
