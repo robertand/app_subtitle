@@ -252,6 +252,7 @@
         let processId = null;
         let currentSegments = [];
         let isTranslated = false;
+        let targetLanguage = '';
         let pollingInterval = null;
         let showDualView = false;
 
@@ -310,7 +311,8 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         file_name: selectedFile.name,
-                        file_size: selectedFile.size
+                        file_size: selectedFile.size,
+                        total_chunks: Math.ceil(selectedFile.size / (10 * 1024 * 1024)) // 10MB chunk size
                     })
                 });
                 const { sessionId, totalChunks, chunkSize } = await initRes.json();
@@ -395,6 +397,7 @@
             }
 
             isTranslated = result.is_translated;
+            targetLanguage = result.target_language;
             currentSegments = result.segments;
             
             if (isTranslated) {
@@ -469,7 +472,7 @@
                         process_id: processId,
                         segments: currentSegments,
                         is_translated: isTranslated,
-                        target_lang: document.getElementById('translationSelect').value
+                        target_lang: targetLanguage
                     })
                 });
                 if (res.ok) {
@@ -481,9 +484,8 @@
 
         function downloadSRT(type) {
             let filename = `transcription_${processId}.srt`;
-            if (type === 'translated') {
-                const lang = document.getElementById('translationSelect').value;
-                filename = `transcription_${processId}_${lang}.srt`;
+            if (type === 'translated' && isTranslated) {
+                filename = `transcription_${processId}_${targetLanguage}.srt`;
             }
             window.location.href = `/download/${processId}/${filename}`;
         }

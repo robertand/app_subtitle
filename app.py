@@ -1386,10 +1386,21 @@ def chunk_upload_init():
     """Initializează o sesiune de upload segmentat"""
     try:
         data = request.get_json()
-        file_name = data.get('fileName')
-        file_size = int(data.get('fileSize'))
-        total_chunks = int(data.get('totalChunks'))
+        file_name = data.get('fileName') or data.get('file_name')
+        file_size = data.get('fileSize') or data.get('file_size')
         
+        if not file_name or file_size is None:
+            return jsonify({'error': 'Numele sau dimensiunea fișierului lipsesc'}), 400
+
+        file_size = int(file_size)
+
+        # Calculează total_chunks dacă lipsește
+        total_chunks = data.get('totalChunks') or data.get('total_chunks')
+        if total_chunks is None:
+            total_chunks = math.ceil(file_size / app.config['CHUNK_SIZE'])
+        else:
+            total_chunks = int(total_chunks)
+
         if file_size > app.config['MAX_FILE_SIZE']:
             return jsonify({
                 'error': f'Fișierul este prea mare. Maxim {app.config["MAX_FILE_SIZE"] / (1024**3):.1f}GB.'
@@ -1406,6 +1417,7 @@ def chunk_upload_init():
         return jsonify({
             'success': True,
             'sessionId': session_info['id'],
+            'totalChunks': total_chunks,
             'chunkSize': app.config['CHUNK_SIZE'],
             'message': 'Sesiune de upload inițializată'
         })
@@ -1419,7 +1431,7 @@ def chunk_upload():
     try:
         chunk_number = int(request.form.get('chunkNumber'))
         total_chunks = int(request.form.get('totalChunks'))
-        session_id = request.form.get('sessionId')
+        session_id = request.form.get('sessionId') or request.args.get('sessionId')
         chunk = request.files.get('chunk')
         
         if not chunk:
@@ -1546,10 +1558,15 @@ def background_processing_task(original_path, model_name, language, translation_
             except Exception as e:
                 print(f"Eroare la traducere: {str(e)}")
 
-        # Creează fișier SRT
-        srt_filename = f"transcription_{process_id}.srt"
-        srt_path = os.path.join(process_dir, srt_filename)
-        write_srt(segments, srt_path)
+        # Creează fișier SRT Original
+        original_srt_filename = f"transcription_{process_id}.srt"
+        write_srt(segments, os.path.join(process_dir, original_srt_filename))
+
+        # Creează fișier SRT Tradus dacă există
+        srt_filename = original_srt_filename
+        if translated_segments:
+            srt_filename = f"transcription_{process_id}_{translation_used}.srt"
+            write_srt(translated_segments, os.path.join(process_dir, srt_filename))
 
         # Preview video
         video_preview_url = None
@@ -1910,7 +1927,16 @@ def save_edits():
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump({'segments': segments}, f, ensure_ascii=False, indent=2)
 
-        return jsonify({'success': True, 'message': 'Modificări salvate'})
+        # Determină numele fișierului SRT pentru regenerare
+        if is_translated and target_lang:
+            srt_filename = f"transcription_{process_id}_{target_lang}.srt"
+        else:
+            srt_filename = f"transcription_{process_id}.srt"
+
+        srt_path = os.path.join(process_dir, srt_filename)
+        write_srt(segments, srt_path)
+
+        return jsonify({'success': True, 'message': 'Modificări salvate și SRT regenerat'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
