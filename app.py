@@ -1286,7 +1286,10 @@ def process_normal_file(file_path, model, device, language, translation_target,
     
     transcribe_kwargs = {
         'task': 'transcribe',
-        'fp16': (device == "cuda")
+        'fp16': (device == "cuda"),
+        'condition_on_previous_text': False,
+        'no_speech_threshold': 0.5,
+        'logprob_threshold': -1.0
     }
     
     if language != 'auto':
@@ -2548,6 +2551,8 @@ def system_info():
             'cuda_available': torch.cuda.is_available(),
             'cuda_version': torch.version.cuda if torch.cuda.is_available() else 'N/A',
             'cpu_count': os.cpu_count(),
+            'cpu_usage': psutil.cpu_percent(),
+            'memory_usage': psutil.virtual_memory().percent,
             'total_memory': f"{psutil.virtual_memory().total / (1024**3):.1f} GB",
             'available_memory': f"{psutil.virtual_memory().available / (1024**3):.1f} GB",
             'python_version': os.sys.version.split()[0],
