@@ -50,6 +50,27 @@ upload_lock = threading.Lock()
 processing_tasks = {}
 tasks_lock = threading.Lock()
 
+# Cache pentru suport hardware
+_hardware_caps = {
+    'nvenc': None
+}
+_caps_lock = threading.Lock()
+
+def is_nvenc_available():
+    """Verifică dacă h264_nvenc este disponibil în FFmpeg"""
+    global _hardware_caps
+    with _caps_lock:
+        if _hardware_caps['nvenc'] is not None:
+            return _hardware_caps['nvenc']
+
+        try:
+            result = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, timeout=5)
+            _hardware_caps['nvenc'] = 'h264_nvenc' in result.stdout
+        except:
+            _hardware_caps['nvenc'] = False
+
+        return _hardware_caps['nvenc']
+
 # Opțiuni modele disponibile
 AVAILABLE_MODELS = {
     'tiny': 'Tiny (Rapid, 39M) - Pentru teste rapide',
@@ -958,16 +979,33 @@ def convert_to_mp4_for_playback(video_path, output_dir, process_id=None):
         output_path = os.path.join(output_dir, 'playback.mp4')
         duration = get_video_duration(video_path)
         
-        cmd = [
-            'ffmpeg',
-            '-i', video_path,
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',   # Mai rapid pentru preview
-            '-c:a', 'aac',
-            '-movflags', '+faststart',
-            '-y',
-            output_path
-        ]
+        # Verifică dacă NVENC este disponibil pentru accelerare hardware
+        if is_nvenc_available():
+            print("Folosesc accelerare hardware NVENC pentru preview...")
+            cmd = [
+                'ffmpeg',
+                '-hwaccel', 'cuda',
+                '-hwaccel_output_format', 'cuda',
+                '-i', video_path,
+                '-c:v', 'h264_nvenc',
+                '-preset', 'p1',          # Cel mai rapid preset NVENC
+                '-tune', 'ull',           # Ultra-low latency
+                '-c:a', 'aac',
+                '-movflags', '+faststart',
+                '-y',
+                output_path
+            ]
+        else:
+            cmd = [
+                'ffmpeg',
+                '-i', video_path,
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',   # Mai rapid pentru preview software
+                '-c:a', 'aac',
+                '-movflags', '+faststart',
+                '-y',
+                output_path
+            ]
         
         if process_id:
             run_ffmpeg_with_progress(cmd, process_id, "Pregătire video (MP4)", duration)
@@ -1363,8 +1401,8 @@ def process_large_file(file_path, model_name, language, translation_target,
 
                 cmd = [
                     'ffmpeg',
+                    '-ss', str(start_chunk),    # Seeking înainte de -i (input seeking) pentru acuratețe maximă
                     '-i', full_audio_path,
-                    '-ss', str(start_chunk),
                     '-t', str(length_chunk),
                     '-acodec', 'pcm_s16le',
                     '-y',
@@ -1417,10 +1455,20 @@ def process_large_file(file_path, model_name, language, translation_target,
                 if not chunk_segments:
                     continue
 
-                # Ajustează timpii segmentelor
+                # Ajustează timpii segmentelor și previne suprapunerea între chunk-uri
+                chunk_end_time = start_chunk + length_chunk
                 for seg in chunk_segments:
-                    seg['start'] += start_chunk
-                    seg['end'] += start_chunk
+                    actual_start = seg['start'] + start_chunk
+                    actual_end = seg['end'] + start_chunk
+
+                    # Ignorăm segmentele care încep după sfârșitul teoretic al acestui chunk
+                    if actual_start >= chunk_end_time:
+                        continue
+
+                    # Ajustăm timpii și limităm sfârșitul la granița chunk-ului
+                    seg['start'] = actual_start
+                    seg['end'] = min(actual_end, chunk_end_time)
+
                     # Adăugăm informația despre limba chunk-ului în fiecare segment
                     seg['detected_language'] = chunk_result.get('language', 'unknown')
                     all_segments.append(seg)
