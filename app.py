@@ -44,6 +44,12 @@ upload_lock = threading.Lock()
 tasks_status = {}
 tasks_lock = threading.Lock()
 
+# Lock global pentru a evita conflictele pe GPU/Resurse
+gpu_processing_lock = threading.Lock()
+
+# Dicționar pentru urmărirea proceselor active (pentru anulare rapidă)
+active_subprocesses = {}
+
 def update_task_status(process_id, status, progress=0, message='', result=None):
     with tasks_lock:
         tasks_status[process_id] = {
@@ -287,17 +293,13 @@ def load_translation_model(source_lang, target_lang):
                 model = MarianMTModel.from_pretrained(model_name).to(device)
                 model_type = 'marian'
             else:
-                # Fallback la M2M100 pentru perechi rare
-                model_name = 'facebook/m2m100_418M'
-                print(f"Încarc modelul M2M100: {model_name}")
+                # Fallback la NLLB-200 (mai modern și suportă mai multe limbi)
+                model_name = TRANSLATION_MODELS_CONFIG['nllb']['name']
+                print(f"Încarc modelul NLLB-200: {model_name}")
                 
-                from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
-                tokenizer = M2M100Tokenizer.from_pretrained(model_name)
-                model = M2M100ForConditionalGeneration.from_pretrained(model_name).to(device)
-
-                # Setează limba sursă
-                tokenizer.src_lang = source_lang
-                model_type = 'm2m100'
+                tokenizer = AutoTokenizer.from_pretrained(model_name)
+                model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+                model_type = 'nllb'
             
             load_time = time.time() - start_time
             
@@ -329,12 +331,10 @@ def load_translation_model(source_lang, target_lang):
                     model = MarianMTModel.from_pretrained(model_name).to(device)
                     model_type = 'marian'
                 else:
-                    model_name = 'facebook/m2m100_418M'
-                    from transformers import M2M100Tokenizer, M2M100ForConditionalGeneration
-                    tokenizer = M2M100Tokenizer.from_pretrained(model_name)
-                    model = M2M100ForConditionalGeneration.from_pretrained(model_name).to(device)
-                    tokenizer.src_lang = source_lang
-                    model_type = 'm2m100'
+                    model_name = TRANSLATION_MODELS_CONFIG['nllb']['name']
+                    tokenizer = AutoTokenizer.from_pretrained(model_name)
+                    model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+                    model_type = 'nllb'
                 
                 translation_models[model_key] = {
                     'model': model,
@@ -385,18 +385,30 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
                     translated = model.generate(**inputs, max_length=512, num_beams=4, early_stopping=True)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
                     
-                elif model_type == 'm2m100':
-                    # M2M100
+                elif model_type == 'nllb':
+                    # NLLB-200
+                    src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
+                    tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
+
+                    if hasattr(tokenizer, 'src_lang'):
+                        tokenizer.src_lang = src_code
+
+                    forced_bos_token_id = None
+                    try:
+                        if hasattr(tokenizer, 'get_lang_id'):
+                            forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
+                        elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
+                            forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
+                    except:
+                        pass
+
                     inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
                     
-                    # Generează traducerea cu limba țintă specificată
-                    translated = model.generate(
-                        **inputs,
-                        forced_bos_token_id=tokenizer.get_lang_id(target_lang),
-                        max_length=512,
-                        num_beams=4,
-                        early_stopping=True
-                    )
+                    gen_kwargs = {"max_length": 512, "num_beams": 4, "early_stopping": True}
+                    if forced_bos_token_id is not None:
+                        gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
+
+                    translated = model.generate(**inputs, **gen_kwargs)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
                 
                 else:
@@ -647,15 +659,7 @@ def convert_to_wav(input_path):
         
         print(f"Executing ffmpeg command: {' '.join(cmd)}")
 
-        result = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=60  # Timeout de 60 de secunde
-        )
-
-        print(f"FFmpeg output: {result.stderr[:200] if result.stderr else 'No output'}")
+        success = run_ffmpeg(cmd, timeout=120)
         
         # Verifică dacă fișierul WAV a fost creat
         if not os.path.exists(temp_wav) or os.path.getsize(temp_wav) == 0:
@@ -674,15 +678,7 @@ def convert_to_wav(input_path):
             
             print(f"Trying alternative ffmpeg command: {' '.join(alt_cmd)}")
             
-            result = subprocess.run(
-                alt_cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            
-            print(f"Alternative ffmpeg output: {result.stderr[:200] if result.stderr else 'No output'}")
+            success = run_ffmpeg(alt_cmd, timeout=120)
             
             if not os.path.exists(temp_wav) or os.path.getsize(temp_wav) == 0:
                 # Ultima încercare - folosește aac decoding dacă e necesar
@@ -754,7 +750,7 @@ def extract_video_preview(video_path, preview_dir):
             output_path
         ]
         
-        subprocess.run(extract_cmd, capture_output=True, check=True)
+        run_ffmpeg(extract_cmd)
         
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return output_path
@@ -796,23 +792,33 @@ def extract_video_for_preview(video_path, output_dir):
         duration = float(video_stream.get('duration', 30))
         preview_duration = min(duration, 30)
         
+        # Detectează dacă avem CUDA pentru accelerare hardware
+        has_cuda = False
+        try:
+            res = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True)
+            if 'h264_nvenc' in res.stdout:
+                has_cuda = True
+        except:
+            pass
+
         # Creează video redus
-        cmd = [
-            'ffmpeg',
-            '-i', video_path,
-            '-t', str(preview_duration),
+        cmd = ['ffmpeg', '-i', video_path, '-t', str(preview_duration)]
+
+        if has_cuda:
+            cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull'])
+        else:
+            cmd.extend(['-c:v', 'libx264', '-preset', 'ultrafast'])
+
+        cmd.extend([
             '-vf', f'scale={width}:{height}',
-            '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '28',
             '-c:a', 'aac',
-            '-b:a', '128k',
+            '-b:a', '64k',
             '-loglevel', 'error',
             '-y',
             output_path
-        ]
+        ])
         
-        subprocess.run(cmd, capture_output=True, check=True)
+        run_ffmpeg(cmd, timeout=120)
         
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return output_path
@@ -823,24 +829,84 @@ def extract_video_for_preview(video_path, output_dir):
         print(f"Eroare la extragerea video pentru preview: {e}")
         return None
 
-def convert_to_mp4_for_playback(video_path, output_dir):
-    """Convertește orice format video la MP4 pentru playback în browser"""
+def run_ffmpeg(cmd, process_id=None, timeout=None):
+    """Rulează o comandă ffmpeg și o înregistrează pentru a putea fi anulată"""
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if process_id:
+            active_subprocesses[process_id] = proc
+
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            print(f"FFmpeg a depășit timpul limită ({timeout}s) și a fost oprit.")
+            return False
+
+        if process_id and process_id in active_subprocesses:
+            del active_subprocesses[process_id]
+
+        if proc.returncode != 0:
+            err_msg = stderr.decode(errors='ignore')
+            print(f"Eroare FFmpeg (cod {proc.returncode}): {err_msg}")
+            return False
+        return True
+    except Exception as e:
+        print(f"Eroare la rularea ffmpeg: {str(e)}")
+        if process_id and process_id in active_subprocesses:
+            del active_subprocesses[process_id]
+        return False
+
+def convert_to_mp4_for_playback(video_path, output_dir, process_id=None):
+    """Convertește orice format video la MP4 pentru playback în browser (accelerat)"""
     try:
         output_path = os.path.join(output_dir, 'playback.mp4')
         
-        cmd = [
-            'ffmpeg',
-            '-i', video_path,
-            '-c:v', 'libx264',
-            '-preset', 'fast',
+        # Detectează dacă avem CUDA pentru accelerare hardware
+        has_cuda = False
+        try:
+            res = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True)
+            if 'h264_nvenc' in res.stdout:
+                has_cuda = True
+        except:
+            pass
+
+        # Parametri optimizați pentru viteză (calitate scăzută, rezoluție mică)
+        cmd = ['ffmpeg', '-i', video_path]
+
+        if has_cuda:
+            print("Folosesc NVENC (CUDA) pentru conversie rapidă preview")
+            # p1 is fastest, scale inside nvenc is faster
+            cmd.extend([
+                '-c:v', 'h264_nvenc',
+                '-preset', 'p1',
+                '-tune', 'ull',
+                '-vf', 'scale=-2:360'
+            ])
+        else:
+            cmd.extend([
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',
+                '-vf', 'scale=-2:360',
+                '-crf', '32' # Calitate mai scăzută pentru viteză maximă
+            ])
+
+        cmd.extend([
             '-c:a', 'aac',
+            '-b:a', '64k',
             '-movflags', '+faststart',
             '-loglevel', 'error',
             '-y',
             output_path
-        ]
+        ])
         
-        subprocess.run(cmd, capture_output=True, check=True)
+        print(f"Execut conversie preview: {' '.join(cmd)}")
+        # Timeout de 5 minute pentru preview
+        success = run_ffmpeg(cmd, process_id, timeout=300)
+        if not success:
+            print("Conversia preview a eșuat sau a expirat.")
+            return None
         
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return output_path
@@ -1168,6 +1234,12 @@ def process_large_file(file_path, model_name, language, translation_target,
 
                 # Procesează fiecare chunk
                 for chunk_idx in range(total_chunks):
+                    # Verifică dacă task-ul a fost anulat
+                    status = get_task_status(process_id)
+                    if status and status.get('status') == 'cancelled':
+                        print(f"Task {process_id} anulat în timpul procesării chunks.")
+                        return None
+
                     start_time_val = chunk_idx * chunk_duration
                     length_val = min(chunk_duration, duration - start_time_val)
 
@@ -1193,7 +1265,10 @@ def process_large_file(file_path, model_name, language, translation_target,
                         audio_chunk_path
                     ]
 
-                    subprocess.run(cmd, check=True, capture_output=True)
+                    success = run_ffmpeg(cmd, process_id)
+                    if not success:
+                        print(f"Eroare la extragerea chunk {chunk_idx}")
+                        continue
 
                     # Verifică dacă chunk-ul audio există și nu este gol
                     if os.path.exists(audio_chunk_path) and os.path.getsize(audio_chunk_path) > 100:
@@ -1388,7 +1463,7 @@ def chunk_upload_init():
         data = request.get_json()
         file_name = data.get('fileName') or data.get('file_name')
         file_size = data.get('fileSize') or data.get('file_size')
-        
+
         if not file_name or file_size is None:
             return jsonify({'error': 'Numele sau dimensiunea fișierului lipsesc'}), 400
 
@@ -1497,11 +1572,19 @@ def background_processing_task(original_path, model_name, language, translation_
         is_mp4 = original_path.lower().endswith('.mp4')
         original_filename = os.path.basename(original_path)
 
-        # Procesează fișierul
-        process_result = process_large_file(
-            original_path, model_name, language, translation_target,
-            should_adjust_segmentation, process_id
-        )
+        # Procesează fișierul (cu lock GPU pentru a evita erori de tip unknown token)
+        with gpu_processing_lock:
+            process_result = process_large_file(
+                original_path, model_name, language, translation_target,
+                should_adjust_segmentation, process_id
+            )
+
+        if process_result is None:
+            # S-ar putea să fi fost anulat
+            status = get_task_status(process_id)
+            if status and status.get('status') == 'cancelled':
+                return
+            raise ValueError("Procesarea a eșuat sau a fost întreruptă.")
 
         result = process_result['result']
         segments = process_result['segments']
@@ -1535,10 +1618,16 @@ def background_processing_task(original_path, model_name, language, translation_
         translation_used = None
 
         if translation_target and translation_target != detected_language:
+            # Verifică anulare
+            status = get_task_status(process_id)
+            if status and status.get('status') == 'cancelled': return
+
             update_task_status(process_id, 'processing', 80, f'Traducere în {translation_target}...')
             translation_start = time.time()
             try:
-                translated = translate_segments(segments, detected_language, translation_target)
+                # Folosim lock și pentru traducere (folosește des GPU)
+                with gpu_processing_lock:
+                    translated = translate_segments(segments, detected_language, translation_target)
                 translation_time = time.time() - translation_start
                 for i, segment in enumerate(translated):
                     translated_segments.append({
@@ -1572,6 +1661,10 @@ def background_processing_task(original_path, model_name, language, translation_
         video_preview_url = None
         image_preview_url = None
         if is_video:
+            # Verifică anulare
+            status = get_task_status(process_id)
+            if status and status.get('status') == 'cancelled': return
+
             update_task_status(process_id, 'processing', 90, 'Generare preview video...')
             try:
                 video_preview_path = extract_video_preview(original_path, process_dir)
@@ -1581,7 +1674,7 @@ def background_processing_task(original_path, model_name, language, translation_
                     image_preview_url = f'/preview_image/{preview_filename}'
 
                 if not is_mp4:
-                    playback_path = convert_to_mp4_for_playback(original_path, process_dir)
+                    playback_path = convert_to_mp4_for_playback(original_path, process_dir, process_id)
                     if playback_path and os.path.exists(playback_path):
                         video_filename = f"video_playback_{process_id}.mp4"
                         shutil.copy2(playback_path, os.path.join(app.config['UPLOAD_FOLDER'], video_filename))
@@ -1890,14 +1983,24 @@ def task_status(process_id):
 
 @app.route('/api/cancel_task/<process_id>', methods=['POST'])
 def cancel_task(process_id):
-    """Anulează un task de procesare"""
+    """Anulează un task de procesare și oprește procesele active"""
     status = get_task_status(process_id)
     if not status:
         return jsonify({'error': 'Task-ul nu a fost găsit'}), 404
 
     if status['status'] in ['processing', 'queued']:
         update_task_status(process_id, 'cancelled', message='Anulat de utilizator')
-        return jsonify({'success': True, 'message': 'Task anulat'})
+
+        # Oprește subprocess-ul ffmpeg dacă există
+        if process_id in active_subprocesses:
+            try:
+                proc = active_subprocesses[process_id]
+                proc.terminate()
+                print(f"Subproces ffmpeg pentru {process_id} terminat.")
+            except:
+                pass
+
+        return jsonify({'success': True, 'message': 'Task anulat și proces oprit'})
     return jsonify({'error': 'Task-ul nu poate fi anulat'}), 400
 
 @app.route('/api/save_edits', methods=['POST'])
