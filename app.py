@@ -798,15 +798,16 @@ def extract_video_preview(video_path, preview_dir):
             '-ss', str(preview_time),
             '-i', video_path,
             '-vframes', '1',
-            '-q:v', '2',  # Calitate bună
+            '-q:v', '2',
             '-loglevel', 'error',
             '-y',
             output_path
         ]
         
-        run_ffmpeg(extract_cmd)
+        # Folosește run_ffmpeg în loc de subprocess direct
+        success = run_ffmpeg(extract_cmd)
         
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+        if success and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return output_path
         else:
             return None
@@ -1627,8 +1628,7 @@ def chunk_upload_status(session_id):
     except Exception as e:
         return jsonify({'error': f'Eroare: {str(e)}'}), 500
 
-def background_processing_task(original_path, model_name, language, translation_target,
-                             should_adjust_segmentation, process_id, session_id):
+def background_processing_task(original_path, model_name, language, translation_target, should_adjust_segmentation, process_id, session_id):
     """Task de procesare în background cu raportare status"""
     try:
         update_task_status(process_id, 'processing', 5, 'Inițializare procesare...')
@@ -1640,7 +1640,7 @@ def background_processing_task(original_path, model_name, language, translation_
         is_mp4 = original_path.lower().endswith('.mp4')
         original_filename = os.path.basename(original_path)
 
-        # Procesează fișierul (cu lock GPU pentru a evita erori de tip unknown token)
+        # Procesează fișierul (cu lock GPU pentru a evita erori)
         with gpu_processing_lock:
             process_result = process_large_file(
                 original_path, model_name, language, translation_target,
@@ -1648,7 +1648,6 @@ def background_processing_task(original_path, model_name, language, translation_
             )
 
         if process_result is None:
-            # S-ar putea să fi fost anulat
             status = get_task_status(process_id)
             if status and status.get('status') == 'cancelled':
                 return
@@ -1686,14 +1685,12 @@ def background_processing_task(original_path, model_name, language, translation_
         translation_used = None
 
         if translation_target and translation_target != detected_language:
-            # Verifică anulare
             status = get_task_status(process_id)
             if status and status.get('status') == 'cancelled': return
 
             update_task_status(process_id, 'processing', 80, f'Traducere în {translation_target}...')
             translation_start = time.time()
             try:
-                # Folosim lock și pentru traducere (folosește des GPU)
                 with gpu_processing_lock:
                     translated = translate_segments(segments, detected_language, translation_target)
                 translation_time = time.time() - translation_start
@@ -1725,34 +1722,58 @@ def background_processing_task(original_path, model_name, language, translation_
             srt_filename = f"transcription_{process_id}_{translation_used}.srt"
             write_srt(translated_segments, os.path.join(process_dir, srt_filename))
 
-        # Preview video
+        # Preview video - MODIFICAT
         video_preview_url = None
         image_preview_url = None
         if is_video:
-            # Verifică anulare
             status = get_task_status(process_id)
             if status and status.get('status') == 'cancelled': return
 
             update_task_status(process_id, 'processing', 90, 'Generare preview video...')
             try:
+                # Pentru imagine preview
                 video_preview_path = extract_video_preview(original_path, process_dir)
                 if video_preview_path and os.path.exists(video_preview_path):
+                    # NU mai copiem, folosim direct calea
                     preview_filename = f"preview_{process_id}.jpg"
-                    shutil.copy2(video_preview_path, os.path.join(app.config['UPLOAD_FOLDER'], preview_filename))
+                    preview_dest = os.path.join(app.config['UPLOAD_FOLDER'], preview_filename)
+
+                    # Asigură-te că directorul există
+                    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+                    # Copiază fișierul
+                    shutil.copy2(video_preview_path, preview_dest)
                     image_preview_url = f'/preview_image/{preview_filename}'
 
+                    # Șterge fișierul original după copiere
+                    try:
+                        os.remove(video_preview_path)
+                    except:
+                        pass
+
+                # Pentru video playback
                 if not is_mp4:
                     playback_path = convert_to_mp4_for_playback(original_path, process_dir, process_id)
                     if playback_path and os.path.exists(playback_path):
                         video_filename = f"video_playback_{process_id}.mp4"
-                        shutil.copy2(playback_path, os.path.join(app.config['UPLOAD_FOLDER'], video_filename))
+                        video_dest = os.path.join(app.config['UPLOAD_FOLDER'], video_filename)
+                        shutil.copy2(playback_path, video_dest)
                         video_preview_url = f'/video_file/{video_filename}'
+
+                        # Șterge fișierul temporar
+                        try:
+                            os.remove(playback_path)
+                        except:
+                            pass
                 else:
                     video_filename = f"video_original_{process_id}.mp4"
-                    shutil.copy2(original_path, os.path.join(app.config['UPLOAD_FOLDER'], video_filename))
+                    video_dest = os.path.join(app.config['UPLOAD_FOLDER'], video_filename)
+                    shutil.copy2(original_path, video_dest)
                     video_preview_url = f'/video_file/{video_filename}'
+
             except Exception as e:
                 print(f"Eroare preview: {str(e)}")
+                # Continuă chiar dacă preview-ul eșuează
 
         # Șterge sesiunea de upload
         with upload_lock:
