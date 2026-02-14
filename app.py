@@ -157,7 +157,7 @@ TRANSLATION_MODELS_CONFIG = {
             'en-sk': 'Helsinki-NLP/opus-mt-en-sk',
             'sk-en': 'Helsinki-NLP/opus-mt-sk-en',
             'en-sl': 'Helsinki-NLP/opus-mt-en-sl',
-            'sl-en': 'Helsinki-NLP/opus-mt-sl-en',
+            'sl-en': 'Helsinki-NLP/opus-mt-zls-en',
         }
     }
 }
