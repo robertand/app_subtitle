@@ -380,8 +380,7 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
                     
                 elif model_type == 'nllb':
-                    # NLLB-200 - Folosim batch_size=1 pentru stabilitate maximă dacă e nevoie
-                    # (Am redus batch-ul în apelant, dar aici ne asigurăm de parametrii de generare)
+                    # NLLB-200 - Folosim batch_size=1 pentru stabilitate maximă
                     src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
                     tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
 
@@ -390,14 +389,25 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
 
                     forced_bos_token_id = None
                     try:
+                        # Prioritate identificare ID limbă țintă pentru NLLB
                         if hasattr(tokenizer, 'get_lang_id'):
                             forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
                         elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
                             forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
+                        else:
+                            forced_bos_token_id = tokenizer.convert_tokens_to_ids(tgt_code)
                     except:
                         pass
 
-                    inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+                    # Trecem src_lang explicit în tokenizer
+                    inputs = tokenizer(
+                        batch_texts,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                        max_length=512,
+                        src_lang=src_code
+                    ).to(device)
                     
                     # Parametri optimizați pentru NLLB-200 pentru a evita repetițiile și halucinațiile
                     gen_kwargs = {
@@ -405,7 +415,8 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
                         "num_beams": 5,
                         "early_stopping": True,
                         "no_repeat_ngram_size": 3,
-                        "do_sample": False
+                        "do_sample": False,
+                        "repetition_penalty": 1.2
                     }
                     if forced_bos_token_id is not None:
                         gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
@@ -494,13 +505,18 @@ def translate_multilingual_segments(segments, target_lang, process_id=None):
                 with gpu_processing_lock:
                     translated = translate_segments(whisper_segments, source_lang, target_lang)
 
-                for i, seg in enumerate(translated):
-                    translated_seg = group_segments[i].copy()
-                    translated_seg['text'] = seg['text']
-                    translated_seg['original'] = False
-                    translated_seg['target_language'] = target_lang
-                    translated_seg['source_language'] = source_lang
-                    translated_segments.append(translated_seg)
+                # Verificăm dacă am primit același număr de segmente
+                if translated and len(translated) == len(group_segments):
+                    for i, seg in enumerate(translated):
+                        translated_seg = group_segments[i].copy()
+                        translated_seg['text'] = seg['text']
+                        translated_seg['original'] = False
+                        translated_seg['target_language'] = target_lang
+                        translated_seg['source_language'] = source_lang
+                        translated_segments.append(translated_seg)
+                else:
+                    print(f"  ⚠️ Mismatch în numărul de segmente traduse pentru {source_lang} ({len(translated) if translated else 0} vs {len(group_segments)})")
+                    raise ValueError("Mismatch segmente")
 
             except Exception as e:
                 print(f"  ❌ Eroare la traducere din {source_lang}: {str(e)}")
@@ -522,6 +538,29 @@ def translate_segments(segments, source_lang, target_lang):
     if not segments or source_lang == target_lang:
         return segments
     
+    # LOGICĂ PIVOT: Dacă nu avem model direct MarianMT dar avem src->en și en->tgt, folosim pivot prin engleză
+    # Aceasta rezolvă problemele de calitate (halucinații) pentru perechi precum sl-ro
+    model_map = TRANSLATION_MODELS_CONFIG['marian']['models']
+    direct_key = f"{source_lang}-{target_lang}"
+
+    if direct_key not in model_map and source_lang != 'en' and target_lang != 'en':
+        pivot_src_key = f"{source_lang}-en"
+        pivot_tgt_key = f"en-{target_lang}"
+
+        # Caz special ro-en (folosește ROMANCE-en)
+        is_pivot_possible = (pivot_src_key in model_map or source_lang == 'ro') and pivot_tgt_key in model_map
+
+        if is_pivot_possible:
+            print(f"🔄 Folosesc pivot EN pentru traducere: {source_lang} -> en -> {target_lang}")
+            try:
+                # Pas 1: source -> en
+                intermediate_segments = translate_segments(segments, source_lang, 'en')
+                if intermediate_segments:
+                    # Pas 2: en -> target
+                    return translate_segments(intermediate_segments, 'en', target_lang)
+            except Exception as e:
+                print(f"⚠️ Eroare la traducere pivot: {e}. Fallback la NLLB.")
+
     print(f"Încep traducerea din {source_lang} în {target_lang}...")
     print(f"Număr segmente: {len(segments)}")
     start_time = time.time()
