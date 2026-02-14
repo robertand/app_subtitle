@@ -280,6 +280,10 @@ def load_translation_model(source_lang, target_lang):
                 'it-en': 'Helsinki-NLP/opus-mt-it-en',
                 'en-ru': 'Helsinki-NLP/opus-mt-en-ru',
                 'ru-en': 'Helsinki-NLP/opus-mt-ru-en',
+                'en-sk': 'Helsinki-NLP/opus-mt-en-sk',
+                'sk-en': 'Helsinki-NLP/opus-mt-sk-en',
+                'en-sl': 'Helsinki-NLP/opus-mt-en-sl',
+                'sl-en': 'Helsinki-NLP/opus-mt-sl-en',
 
                 # Pentru perechi mai rare, folosește M2M100
                 # 'default': 'facebook/m2m100_418M'
@@ -404,7 +408,14 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
 
                     inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
                     
-                    gen_kwargs = {"max_length": 512, "num_beams": 4, "early_stopping": True}
+                    # Parametri de generare mai stricți pentru a evita halucinațiile (Tower of Babel)
+                    gen_kwargs = {
+                        "max_length": 512,
+                        "num_beams": 4,
+                        "early_stopping": True,
+                        "no_repeat_ngram_size": 3,
+                        "length_penalty": 1.0
+                    }
                     if forced_bos_token_id is not None:
                         gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
 
@@ -539,21 +550,16 @@ def translate_text(text, source_lang, target_lang):
             
             inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
             
+            gen_kwargs = {
+                "max_length": 512,
+                "num_beams": 4,
+                "early_stopping": True,
+                "no_repeat_ngram_size": 3
+            }
             if forced_bos_token_id is not None:
-                translated = model.generate(
-                    **inputs,
-                    forced_bos_token_id=forced_bos_token_id,
-                    max_length=512,
-                    num_beams=4,
-                    early_stopping=True
-                )
-            else:
-                translated = model.generate(
-                    **inputs,
-                    max_length=512,
-                    num_beams=4,
-                    early_stopping=True
-                )
+                gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
+
+            translated = model.generate(**inputs, **gen_kwargs)
             
             result = tokenizer.decode(translated[0], skip_special_tokens=True)
         
@@ -619,6 +625,54 @@ def get_video_duration(video_path):
     except Exception as e:
         print(f"Eroare la obținerea duratei: {str(e)}")
         return None
+
+def detect_language_robust(file_path, model, device):
+    """Detectează limba eșantionând mai multe puncte din fișier"""
+    try:
+        duration = get_video_duration(file_path)
+        if not duration:
+            return 'en'
+
+        # Eșantionăm la 10%, 30%, 50%, 70%, 90%
+        sample_points = [0.1, 0.3, 0.5, 0.7, 0.9]
+        detected_languages = []
+
+        for point in sample_points:
+            start_time = duration * point
+            temp_sample = tempfile.mktemp(suffix='.wav')
+
+            # Extrage 30 secunde de audio
+            cmd = [
+                'ffmpeg', '-ss', str(start_time), '-i', file_path,
+                '-t', '30', '-ac', '1', '-ar', '16000',
+                '-acodec', 'pcm_s16le', '-loglevel', 'error', '-y', temp_sample
+            ]
+
+            subprocess.run(cmd, capture_output=True)
+
+            if os.path.exists(temp_sample) and os.path.getsize(temp_sample) > 1000:
+                audio = whisper.load_audio(temp_sample)
+                audio = whisper.pad_or_trim(audio)
+                mel = whisper.log_mel_spectrogram(audio).to(device)
+                _, probs = model.detect_language(mel)
+                lang = max(probs, key=probs.get)
+                detected_languages.append(lang)
+
+            if os.path.exists(temp_sample):
+                os.remove(temp_sample)
+
+        if not detected_languages:
+            return 'en'
+
+        # Returnează limba majoritară
+        from collections import Counter
+        most_common = Counter(detected_languages).most_common(1)
+        print(f"Detectare limbă robustă: {detected_languages} -> {most_common[0][0]}")
+        return most_common[0][0]
+
+    except Exception as e:
+        print(f"Eroare la detectarea robustă a limbii: {e}")
+        return 'en'
 
 def convert_to_wav(input_path):
     """Converteste orice fișier audio/video în WAV pentru procesare"""
@@ -1230,7 +1284,13 @@ def process_large_file(file_path, model_name, language, translation_target,
                 print(f"Durata totală: {duration:.1f}s, Chunks: {total_chunks}")
 
                 all_segments = []
+
+                # Detectare robustă a limbii dacă e auto
                 detected_language_local = language
+                if language == 'auto':
+                    update_task_status(process_id, 'processing', 7, 'Detectare limbă...')
+                    detected_language_local = detect_language_robust(file_path, model, device)
+                    print(f"Limbă detectată robust: {detected_language_local}")
 
                 # Procesează fiecare chunk
                 for chunk_idx in range(total_chunks):
@@ -1246,6 +1306,8 @@ def process_large_file(file_path, model_name, language, translation_target,
                     if length_val < 0.1:
                         continue
 
+                    progress = 10 + (chunk_idx / total_chunks * 60)
+                    update_task_status(process_id, 'processing', progress, f'Procesare chunk {chunk_idx+1}/{total_chunks}...')
                     print(f"Procesez chunk {chunk_idx + 1}/{total_chunks} ({start_time_val:.1f}s - {start_time_val + length_val:.1f}s)")
 
                     # Extrage audio chunk
@@ -1282,19 +1344,11 @@ def process_large_file(file_path, model_name, language, translation_target,
                         }
 
                         # Menține consistența limbii
-                        current_lang = language if language != 'auto' else (detected_language_local if detected_language_local != 'auto' else None)
-                        if current_lang:
-                            transcribe_kwargs['language'] = current_lang
+                        if detected_language_local and detected_language_local != 'auto':
+                            transcribe_kwargs['language'] = detected_language_local
 
                         try:
                             result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
-
-                            # Capturează limba dacă e auto
-                            if language == 'auto' and (detected_language_local == 'auto' or not detected_language_local):
-                                chunk_text = result.get('text', '').strip()
-                                if len(chunk_text) > 5:
-                                    detected_language_local = result.get('language', 'en')
-                                    print(f"Limbă detectată: {detected_language_local}")
 
                             # Ajustează timecode-urile pentru chunk-ul curent
                             for segment in result.get('segments', []):
@@ -1310,6 +1364,10 @@ def process_large_file(file_path, model_name, language, translation_target,
 
                 # Curăță directorul chunk-urilor
                 shutil.rmtree(audio_chunks_dir, ignore_errors=True)
+
+                # Curăță memoria GPU
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 # Procesează segmentele combinate
                 segments = sorted(all_segments, key=lambda x: x['start'])
@@ -1369,6 +1427,12 @@ def process_normal_file(file_path, model, device, language, translation_target,
     
     if language != 'auto':
         transcribe_kwargs['language'] = language
+    else:
+        # Detectare robustă a limbii
+        print("Detectare limbă robustă...")
+        detected_lang = detect_language_robust(audio_path, model, device)
+        transcribe_kwargs['language'] = detected_lang
+        print(f"Limbă detectată: {detected_lang}")
     
     try:
         print(f"Transcriere fișier: {audio_path}")
@@ -1392,6 +1456,10 @@ def process_normal_file(file_path, model, device, language, translation_target,
         except:
             pass
     
+    # Curăță memoria GPU
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # Procesează segmentele
     segments = result.get('segments', [])
     
@@ -2000,6 +2068,14 @@ def cancel_task(process_id):
             except:
                 pass
 
+        # Curăță memoria GPU
+        def clear_gpu():
+            with gpu_processing_lock:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        threading.Thread(target=clear_gpu).start()
+
         return jsonify({'success': True, 'message': 'Task anulat și proces oprit'})
     return jsonify({'error': 'Task-ul nu poate fi anulat'}), 400
 
@@ -2046,6 +2122,10 @@ def save_edits():
 @app.route('/upload', methods=['POST'])
 def upload_file():
     """Endpoint pentru upload simplu (compatibilitate)"""
+    with gpu_processing_lock:
+        return upload_file_internal()
+
+def upload_file_internal():
     if 'file' not in request.files:
         return jsonify({'error': 'Niciun fișier selectat'}), 400
     
@@ -2327,6 +2407,10 @@ def segments_json(process_id, filename):
 @app.route('/translate_segments', methods=['POST'])
 def api_translate_segments():
     """Traduce segmentele existente într-o altă limbă"""
+    with gpu_processing_lock:
+        return api_translate_segments_internal()
+
+def api_translate_segments_internal():
     try:
         data = request.get_json()
         segments = data.get('segments', [])
@@ -2381,6 +2465,10 @@ def api_translate_segments():
 @app.route('/translate_existing', methods=['POST'])
 def translate_existing():
     """Traduce segmentele existente (din sesiune) într-o nouă limbă"""
+    with gpu_processing_lock:
+        return translate_existing_internal()
+
+def translate_existing_internal():
     try:
         data = request.get_json()
         target_lang = data.get('target_lang')
@@ -2612,6 +2700,10 @@ def video_preview():
 @app.route('/preview_transcription', methods=['POST'])
 def preview_transcription():
     """Previzualizare rapidă a transcrierii"""
+    with gpu_processing_lock:
+        return preview_transcription_internal()
+
+def preview_transcription_internal():
     if 'file' not in request.files:
         return jsonify({'error': 'Niciun fișier selectat'}), 400
     
