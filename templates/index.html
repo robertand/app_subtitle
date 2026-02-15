@@ -1262,6 +1262,105 @@
             flex: 1;
         }
         
+        /* Project Library */
+        .project-library {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            display: none; /* Hidden until projects are loaded */
+        }
+
+        .project-library-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 10px;
+        }
+
+        .project-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 15px;
+            max-height: 400px;
+            overflow-y: auto;
+            padding: 5px;
+        }
+
+        .project-card {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 15px;
+            transition: all 0.2s;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .project-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .project-card.active {
+            border-left: 4px solid #667eea;
+            background: #ebf4ff;
+        }
+
+        .project-card h4 {
+            margin: 0 0 5px 0;
+            color: #2d3748;
+            font-size: 1em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding-right: 20px;
+        }
+
+        .project-card .meta {
+            font-size: 0.8em;
+            color: #718096;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .project-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .project-btn {
+            padding: 4px 8px;
+            font-size: 0.75em;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: opacity 0.2s;
+        }
+
+        .project-btn.delete { background: #fed7d7; color: #c53030; }
+        .project-btn.export { background: #c6f6d5; color: #22543d; }
+        .project-btn.rename { background: #bee3f8; color: #2b6cb0; }
+
+        .project-btn:hover { opacity: 0.8; }
+
+        /* Main Project Controls in Result Area */
+        .main-project-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #e2e8f0;
+        }
+
         /* Debug button */
         .debug-btn {
             background: #805ad5;
@@ -1370,6 +1469,25 @@
     <div class="container">
         <h1><i class="fas fa-closed-captioning"></i> Transcriere Video/Audio cu Upload Segmentat</h1>
         <p class="subtitle">Suportă fișiere mari până la 50GB • Upload în bucăți • Procesare optimizată</p>
+
+        <!-- Project Library -->
+        <div class="project-library" id="projectLibrary">
+            <div class="project-library-header">
+                <h3><i class="fas fa-folder-open"></i> Biblioteca de Proiecte</h3>
+                <div style="display: flex; gap: 10px;">
+                    <button class="project-btn rename" onclick="document.getElementById('importFile').click()">
+                        <i class="fas fa-file-import"></i> Import .stum
+                    </button>
+                    <input type="file" id="importFile" style="display: none;" accept=".stum" onchange="importProject(event)">
+                    <button class="project-btn" onclick="loadProjects()" title="Actualizează">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="project-grid" id="projectGridList">
+                <!-- Projects will be listed here -->
+            </div>
+        </div>
         
         <!-- System Info -->
         <div class="system-info" id="systemInfo">
@@ -1494,8 +1612,8 @@
             </div>
         </div>
         
-        <!-- Translation Panel -->
-        <div class="translation-panel" id="translationPanel">
+        <!-- Translation Panel (Hidden by default for initial transcription) -->
+        <div class="translation-panel" id="translationPanel" style="display: none;">
             <div class="translation-header">
                 <h3><i class="fas fa-language"></i> Traducere Subtitrări</h3>
                 <button class="translation-toggle" id="toggleTranslation">
@@ -1812,6 +1930,19 @@
                     <i class="fas fa-film"></i> Play cu Subtitrări
                 </button>
             </div>
+
+            <!-- Project Management Actions -->
+            <div class="main-project-controls">
+                <button class="project-btn rename" onclick="renameCurrentProject()">
+                    <i class="fas fa-edit"></i> Redenumește Proiectul
+                </button>
+                <button class="project-btn export" onclick="exportCurrentProject()">
+                    <i class="fas fa-file-export"></i> Descarcă .stum (Proiect Complet)
+                </button>
+                <button class="project-btn" onclick="loadProjects(); document.getElementById('projectLibrary').scrollIntoView({behavior: 'smooth'})">
+                    <i class="fas fa-folder-open"></i> Înapoi la Bibliotecă
+                </button>
+            </div>
         </div>
     </div>
     
@@ -1962,6 +2093,7 @@
             loadTranslationLanguages();
             loadSystemInfo();
             loadModelStatus();
+            loadProjects();
             
             // Ascultă evenimente pentru controale
             minDurationSlider.addEventListener('input', updateSegmentationSettings);
@@ -3120,6 +3252,10 @@
 
                 if (data.status === 'completed') {
                     console.log('Task completed successfully!');
+                    // Dacă e un rezultat de succes, ascundem avertismentul de heartbeat
+                    if (data.progress === 100) {
+                        updateProgress(100, 'Finalizat!');
+                    }
                     handleProcessingResult(data.result);
                 } else if (data.status === 'error') {
                     console.error('Task reported an error:', data.message);
@@ -3234,11 +3370,16 @@
             srtFilename = data.filename;
             processId = data.process_id || processId;
 
-            // Fallback: folosim datele din rezultat doar dacă fetch-ul de pe disc a eșuat
-            if (!currentSegments || currentSegments.length === 0) {
-                if (data.segments) currentSegments = data.segments;
+            // Prioritate: folosim datele direct din rezultat dacă sunt disponibile (evităm fetch-uri inutile)
+            if (data.segments) {
+                currentSegments = data.segments;
+                if (data.translation_used) translatedSegments = data.segments;
+                else originalSegments = data.segments;
+            } else if (!currentSegments || currentSegments.length === 0) {
+                // Fallback: folosim alte câmpuri din rezultat dacă fetch-ul de pe disc a eșuat
                 if (data.original_segments) originalSegments = data.original_segments;
                 if (data.translated_segments) translatedSegments = data.translated_segments;
+                currentSegments = translatedSegments || originalSegments;
             }
 
             imagePreviewUrl = data.image_preview_url;
@@ -3246,12 +3387,25 @@
             videoDuration = data.video_duration || data.total_duration;
             isMp4File = data.is_mp4 || false;
             
-            // Resetează traducerile multiple
-            multipleTranslations = {};
-            if (data.is_translated && data.translation_target) {
-                multipleTranslations[data.translation_target] = translatedSegments;
-                currentTranslationLang = data.translation_target;
+            // Actualizează lista de traduceri multiple
+            const usedLang = data.translation_used || data.translation_target;
+            if (data.is_translated && usedLang) {
+                multipleTranslations[usedLang] = currentSegments;
+                currentTranslationLang = usedLang;
+
+                // Păstrăm și numele fișierului SRT dacă există
+                if (data.filename) {
+                    if (!multipleTranslations[usedLang].srt_filename) {
+                        multipleTranslations[usedLang].srt_filename = data.filename;
+                    }
+                }
             }
+            // Reîmprospătează lista din interfață
+            refreshTranslationsList();
+            loadProjects(); // Actualizează biblioteca de proiecte
+
+            // Afișează panoul de traduceri multiple
+            document.getElementById('multipleTranslationsPanel').style.display = 'block';
             
             // Afișează textul complet
             document.getElementById('fullText').textContent = data.full_text;
@@ -3537,6 +3691,9 @@
 
                 downloadTranslatedBtn.style.display = 'none';
                 mainDownloadTranslatedBtn.style.display = 'none';
+
+                // Actualizează UI lista (pentru clasa active)
+                refreshTranslationsList();
             } else {
                 try {
                     // Dacă nu avem segmentele în memorie (doar meta-datele de la refresh)
@@ -3621,24 +3778,19 @@
                 
                 const data = await response.json();
                 
-                addTranslationBtn.innerHTML = originalBtnText;
-                addTranslationBtn.disabled = false;
-                
                 if (data.success) {
-                    multipleTranslations[targetLang] = data.segments;
-                    translatedSrtFilename = data.srt_filename;
-                    loadTranslation(targetLang);
-                    showToast(`Traducere în ${targetLang} completă! ${data.segment_count} segmente traduse`, 'success');
-                    refreshTranslationsList();
+                    showToast('Traducerea a început în background...', 'info');
+                    progressContainer.style.display = 'block';
+                    loading.style.display = 'block';
+                    pollTaskStatus(data.process_id);
                     
-                    // Afișează butoanele de descărcare pentru traducere
-                    downloadTranslatedBtn.style.display = 'inline-flex';
-                    mainDownloadTranslatedBtn.style.display = 'inline-flex';
-
                     setTimeout(() => {
-                        showToast(`Fișierul ${data.srt_filename} a fost generat`, 'info');
-                    }, 500);
+                        addTranslationBtn.innerHTML = originalBtnText;
+                        addTranslationBtn.disabled = false;
+                    }, 1000);
                 } else {
+                    addTranslationBtn.innerHTML = originalBtnText;
+                    addTranslationBtn.disabled = false;
                     throw new Error(data.error || 'Eroare la traducere');
                 }
             } catch (error) {
@@ -4004,6 +4156,207 @@
                 toast.style.animation = 'slideOut 0.3s ease';
                 setTimeout(() => toast.remove(), 300);
             }, 3000);
+        }
+
+        // --- FUNCȚII PROIECTE (.STUM) ---
+
+        async function loadProjects() {
+            try {
+                const response = await fetch('/projects');
+                const projects = await response.json();
+                const projectGridList = document.getElementById('projectGridList');
+                const projectLibrary = document.getElementById('projectLibrary');
+
+                if (projects.length > 0) {
+                    projectLibrary.style.display = 'block';
+                    projectGridList.innerHTML = '';
+
+                    projects.forEach(p => {
+                        const card = document.createElement('div');
+                        card.className = `project-card ${processId === p.process_id ? 'active' : ''}`;
+                        card.onclick = (e) => {
+                            // Don't trigger if an action button was clicked
+                            if (e.target.closest('.project-btn')) return;
+                            loadProject(p.process_id);
+                        };
+
+                        const durationStr = p.duration ? formatDuration(p.duration) : 'N/A';
+
+                        card.innerHTML = `
+                            <h4 title="${p.project_name}">${p.project_name}</h4>
+                            <div class="meta">
+                                <span><i class="far fa-calendar-alt"></i> ${p.created_at}</span>
+                                <span><i class="far fa-clock"></i> ${durationStr} | <i class="fas fa-language"></i> ${p.language || 'auto'}</span>
+                                <span><i class="fas fa-microchip"></i> ${p.model_used || 'N/A'}</span>
+                            </div>
+                            <div class="project-actions">
+                                <button class="project-btn rename" onclick="renameProject('${p.process_id}', '${p.project_name}')">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button class="project-btn export" onclick="exportProject('${p.process_id}')">
+                                    <i class="fas fa-download"></i>
+                                </button>
+                                <button class="project-btn delete" onclick="deleteProject('${p.process_id}')">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        `;
+                        projectGridList.appendChild(card);
+                    });
+                } else {
+                    projectLibrary.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Eroare la încărcarea proiectelor:', error);
+            }
+        }
+
+        async function loadProject(pid) {
+            showToast('Se încarcă proiectul...', 'info');
+            try {
+                const response = await fetch(`/load_project/${pid}`);
+                const data = await response.json();
+
+                if (data.success) {
+                    processId = pid;
+
+                    // Resetăm UI-ul pentru rezultate
+                    resultContainer.style.display = 'block';
+                    document.getElementById('uploadArea').style.display = 'none';
+                    document.getElementById('resultTitle').innerHTML = `<i class="fas fa-folder-open"></i> Proiect: ${data.metadata.project_name}`;
+
+                    // Încărcăm segmentele
+                    const segResp = await fetch(`/segments_json/${pid}/original_segments.json?t=${Date.now()}`);
+                    if (segResp.ok) {
+                        const segData = await segResp.json();
+                        originalSegments = segData.segments;
+                        currentSegments = originalSegments;
+                        displaySegments(originalSegments);
+                    }
+
+                    // Verificăm video
+                    if (data.has_video) {
+                        videoPreviewUrl = `/video_file/video_playback_${pid}.mp4`;
+                        videoDuration = data.metadata.duration || 0;
+                        isVideoFile = true;
+                        isMp4File = true;
+
+                        document.getElementById('videoPreviewContainer').style.display = 'block';
+                        const videoSource = document.getElementById('videoSource');
+                        videoSource.src = videoPreviewUrl;
+                        document.getElementById('videoPreview').load();
+                        document.getElementById('totalTime').textContent = formatTime(videoDuration);
+                    }
+
+                    // Reîmprospătăm lista de traduceri
+                    refreshTranslationsList();
+                    document.getElementById('multipleTranslationsPanel').style.display = 'block';
+
+                    // Scroll la rezultate
+                    resultContainer.scrollIntoView({behavior: 'smooth'});
+
+                    // Update list selection
+                    loadProjects();
+                    showToast('Proiect încărcat cu succes', 'success');
+                } else {
+                    showError(`Eroare: ${data.error}`);
+                }
+            } catch (error) {
+                showError(`Eroare la încărcarea proiectului: ${error.message}`);
+            }
+        }
+
+        async function renameProject(pid, oldName) {
+            const newName = prompt('Introdu noul nume pentru proiect:', oldName);
+            if (!newName || newName === oldName) return;
+
+            try {
+                const response = await fetch(`/rename_project/${pid}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name: newName})
+                });
+                const data = await response.json();
+                if (data.success) {
+                    showToast('Proiect redenumit', 'success');
+                    if (processId === pid) {
+                        document.getElementById('resultTitle').innerHTML = `<i class="fas fa-folder-open"></i> Proiect: ${newName}`;
+                    }
+                    loadProjects();
+                }
+            } catch (error) {
+                showToast('Eroare la redenumire', 'error');
+            }
+        }
+
+        function renameCurrentProject() {
+            if (!processId) return;
+            const currentTitle = document.getElementById('resultTitle').textContent.replace(' Proiect: ', '').trim();
+            renameProject(processId, currentTitle);
+        }
+
+        function exportProject(pid) {
+            window.location.href = `/export_project/${pid}`;
+        }
+
+        function exportCurrentProject() {
+            if (processId) exportProject(processId);
+        }
+
+        async function deleteProject(pid) {
+            if (!confirm('Ești sigur că vrei să ștergi acest proiect? Această acțiune este ireversibilă.')) return;
+
+            try {
+                const response = await fetch(`/delete_project/${pid}`, { method: 'DELETE' });
+                const data = await response.json();
+                if (data.success) {
+                    showToast('Proiect șters', 'success');
+                    if (processId === pid) {
+                        location.reload(); // Refresh total dacă am șters proiectul curent
+                    } else {
+                        loadProjects();
+                    }
+                }
+            } catch (error) {
+                showToast('Eroare la ștergere', 'error');
+            }
+        }
+
+        async function importProject(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            showToast('Se importă proiectul...', 'info');
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/import_project', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (data.success) {
+                    showToast('Import finalizat', 'success');
+                    loadProject(data.process_id);
+                } else {
+                    showError(`Eroare import: ${data.error}`);
+                }
+            } catch (error) {
+                showError(`Eroare la import: ${error.message}`);
+            }
+            // Resetăm inputul
+            event.target.value = '';
+        }
+
+        function formatDuration(seconds) {
+            if (!seconds) return '0s';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            if (h > 0) return `${h}h ${m}m ${s}s`;
+            if (m > 0) return `${m}m ${s}s`;
+            return `${s}s`;
         }
     </script>
 </body>
