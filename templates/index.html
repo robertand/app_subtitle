@@ -3087,12 +3087,13 @@
             videoDuration = data.video_duration || data.total_duration;
             isMp4File = data.is_mp4 || false;
             
-            // Resetează traducerile multiple
-            multipleTranslations = {};
+            // Actualizează lista de traduceri multiple
             if (data.is_translated && data.translation_target) {
-                multipleTranslations[data.translation_target] = translatedSegments;
+                multipleTranslations[data.translation_target] = currentSegments;
                 currentTranslationLang = data.translation_target;
             }
+            // Reîmprospătează lista din interfață
+            refreshTranslationsList();
             
             // Afișează textul complet
             document.getElementById('fullText').textContent = data.full_text;
@@ -3462,24 +3463,19 @@
                 
                 const data = await response.json();
                 
-                addTranslationBtn.innerHTML = originalBtnText;
-                addTranslationBtn.disabled = false;
-                
                 if (data.success) {
-                    multipleTranslations[targetLang] = data.segments;
-                    translatedSrtFilename = data.srt_filename;
-                    loadTranslation(targetLang);
-                    showToast(`Traducere în ${targetLang} completă! ${data.segment_count} segmente traduse`, 'success');
-                    refreshTranslationsList();
+                    showToast('Traducerea a început în background...', 'info');
+                    progressContainer.style.display = 'block';
+                    loading.style.display = 'block';
+                    pollTaskStatus(data.process_id);
                     
-                    // Afișează butoanele de descărcare pentru traducere
-                    downloadTranslatedBtn.style.display = 'inline-flex';
-                    mainDownloadTranslatedBtn.style.display = 'inline-flex';
-
                     setTimeout(() => {
-                        showToast(`Fișierul ${data.srt_filename} a fost generat`, 'info');
-                    }, 500);
+                        addTranslationBtn.innerHTML = originalBtnText;
+                        addTranslationBtn.disabled = false;
+                    }, 1000);
                 } else {
+                    addTranslationBtn.innerHTML = originalBtnText;
+                    addTranslationBtn.disabled = false;
                     throw new Error(data.error || 'Eroare la traducere');
                 }
             } catch (error) {
