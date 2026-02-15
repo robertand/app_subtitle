@@ -349,7 +349,7 @@ def load_translation_model(source_lang, target_lang):
                 print(f"✗ Eroare critică la încărcarea modelului: {str(e2)}")
                 return None
 
-def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
+def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, process_id=None, current_idx=0, total_segments=0):
     """Traduce un batch de segmente păstrând timecode-ul"""
     if not segments or source_lang == target_lang:
         return segments
@@ -370,6 +370,12 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
         translated_segments = []
         
         for i in range(0, len(segments), batch_size):
+            # Update progress
+            if process_id:
+                prog_idx = current_idx + i
+                progress_val = 20 + int((prog_idx / total_segments) * 70) if total_segments > 0 else 50
+                update_task_status(process_id, 'processing', progress_val, f"Traducere: {prog_idx}/{total_segments} segmente...")
+
             batch = segments[i:i+batch_size]
             batch_texts = [seg['text'] for seg in batch]
             
@@ -440,6 +446,9 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
                         if trans_text == orig_text and len(orig_text) > 10:
                             print(f"  ⚠️ Traducerea locală pare identică cu sursa pentru segmentul {i+j}. Încerc Google...")
                             try:
+                                # Adăugăm un mic delay și timeout pentru a evita blocarea
+                                import time
+                                time.sleep(0.1)
                                 g_trans = GoogleTranslator(source=source_lang, target=target_lang).translate(orig_text)
                                 if g_trans:
                                     trans_text = g_trans.strip()
@@ -457,6 +466,8 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
                 print(f"⚠️ Eroare la traducerea locală a batch-ului {i}: {str(e)}. Încerc Google Translate...")
                 try:
                     # Fallback la Google Translate (prin deep-translator)
+                    # Notă: GoogleTranslator nu are un parametru de timeout direct în constructor
+                    # dar se bazează pe requests care poate fi configurat global dacă e nevoie.
                     translator = GoogleTranslator(source=source_lang, target=target_lang)
 
                     for seg in batch:
@@ -534,7 +545,7 @@ def translate_multilingual_segments(segments, target_lang, process_id=None, over
             try:
                 # Utilizăm lock-ul GPU pentru traducere
                 with gpu_processing_lock:
-                    translated = translate_segments(whisper_segments, source_lang, target_lang)
+                    translated = translate_segments(whisper_segments, source_lang, target_lang, process_id=process_id)
 
                 # Verificăm dacă am primit același număr de segmente
                 if translated and len(translated) == len(group_segments):
@@ -564,7 +575,7 @@ def translate_multilingual_segments(segments, target_lang, process_id=None, over
 
     return translated_segments
 
-def translate_segments(segments, source_lang, target_lang):
+def translate_segments(segments, source_lang, target_lang, process_id=None):
     """Traduce toate segmentele păstrând timecode-ul și structura"""
     if not segments or source_lang == target_lang:
         return segments
@@ -585,10 +596,10 @@ def translate_segments(segments, source_lang, target_lang):
             print(f"🔄 Folosesc pivot EN pentru traducere: {source_lang} -> en -> {target_lang}")
             try:
                 # Pas 1: source -> en
-                intermediate_segments = translate_segments(segments, source_lang, 'en')
+                intermediate_segments = translate_segments(segments, source_lang, 'en', process_id=process_id)
                 if intermediate_segments:
                     # Pas 2: en -> target
-                    return translate_segments(intermediate_segments, 'en', target_lang)
+                    return translate_segments(intermediate_segments, 'en', target_lang, process_id=process_id)
             except Exception as e:
                 print(f"⚠️ Eroare la traducere pivot: {e}. Fallback la NLLB.")
 
@@ -620,16 +631,28 @@ def translate_segments(segments, source_lang, target_lang):
             current_batch_size = 1 if is_nllb else 10
 
             print(f"Traduc {len(short_segments)} segmente scurte (batch_size={current_batch_size})...")
-            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=current_batch_size)
+            translated_short = translate_segment_batch(
+                short_segments, source_lang, target_lang,
+                batch_size=current_batch_size,
+                process_id=process_id,
+                current_idx=0,
+                total_segments=len(segments)
+            )
             translated_segments.extend(translated_short)
         
         # Traduce segmentele lungi individual pentru mai multă precizie
         if long_segments:
             print(f"Traduc {len(long_segments)} segmente lungi...")
-            for seg in long_segments:
+            for i, seg in enumerate(long_segments):
                 try:
                     # Traduce fiecare segment lung individual
-                    batch_result = translate_segment_batch([seg], source_lang, target_lang, batch_size=1)
+                    batch_result = translate_segment_batch(
+                        [seg], source_lang, target_lang,
+                        batch_size=1,
+                        process_id=process_id,
+                        current_idx=len(short_segments) + i,
+                        total_segments=len(segments)
+                    )
                     if batch_result:
                         translated_segments.append(batch_result[0])
                     else:
@@ -1106,7 +1129,7 @@ def convert_to_mp4_for_playback(video_path, output_dir, process_id=None):
                     return output_path
             except:
                 pass
-        
+
         # Verifică dacă NVENC este disponibil pentru accelerare hardware
         use_nvenc = is_nvenc_available()
 
@@ -1699,15 +1722,6 @@ def process_large_file(file_path, model_name, language, translation_target,
                 # Curăță chunk-ul audio
                 os.remove(audio_chunk_path)
 
-            # La final, salvăm informațiile despre limbile detectate
-            language_report_path = os.path.join(process_dir, 'language_report.json')
-            with open(language_report_path, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'chunks': language_per_chunk,
-                    'total_chunks': total_chunks,
-                    'languages_detected': list(set([item['language'] for item in language_per_chunk]))
-                }, f, ensure_ascii=False, indent=2)
-
             # Procesează segmentele combinate
             segments = sorted(all_segments, key=lambda x: x['start'])
 
@@ -1724,6 +1738,18 @@ def process_large_file(file_path, model_name, language, translation_target,
             lang_counter = Counter([item['language'] for item in language_per_chunk])
             primary_language = lang_counter.most_common(1)[0][0] if lang_counter else 'unknown'
             secondary_languages = [lang for lang, count in lang_counter.most_common()[1:3]]
+
+            # La final, salvăm un raport complet despre limbile detectate
+            language_report_path = os.path.join(process_dir, 'language_report.json')
+            with open(language_report_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'primary_language': primary_language,
+                    'secondary_languages': secondary_languages,
+                    'languages_detected': dict(lang_counter),
+                    'total_segments': len(segments),
+                    'chunks': language_per_chunk,
+                    'total_chunks': total_chunks
+                }, f, ensure_ascii=False, indent=2)
 
             print(f"📊 Raport limbă pe chunk-uri:")
             for item in language_per_chunk:
@@ -2006,21 +2032,9 @@ def background_processing_task(original_path, model_name, language, translation_
         secondary_languages = result.get('secondary_languages', [])
         languages_detected = result.get('languages_detected', {})
 
-        # Salvează raportul de limbi
+        # Raportul de limbi a fost deja salvat în process_large_file cu detalii complete.
+        # Ne asigurăm doar că folderul procesului este corect identificat.
         process_dir = get_process_dir(process_id)
-        language_report_path = os.path.join(process_dir, 'language_report.json')
-        if os.path.exists(language_report_path):
-            # Deja salvat, nu facem nimic
-            pass
-        else:
-            # Salvăm informațiile
-            with open(language_report_path, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'primary_language': detected_language,
-                    'secondary_languages': secondary_languages,
-                    'languages_detected': languages_detected,
-                    'total_segments': len(segments)
-                }, f, ensure_ascii=False, indent=2)
 
         # Creează segmentele originale - PĂSTRĂM INFORMAȚIA DESPRE LIMBA FIECĂRUI SEGMENT
         original_segments = []
@@ -2196,7 +2210,13 @@ def background_translation_task(process_id, target_lang):
             if os.path.exists(report_path):
                 with open(report_path, 'r', encoding='utf-8') as f:
                     report = json.load(f)
-                    overall_lang = report.get('primary_language', 'en')
+                    # Încercăm primary_language sau prima limbă detectată din chunks
+                    overall_lang = report.get('primary_language')
+                    if not overall_lang and report.get('chunks'):
+                        overall_lang = report['chunks'][0].get('language', 'en')
+
+                    if not overall_lang:
+                        overall_lang = 'en'
         except:
             pass
 
@@ -2244,6 +2264,7 @@ def background_translation_task(process_id, target_lang):
             'translation_used': target_lang,
             'process_id': process_id,
             'segment_count': len(translated_segments),
+            'segments': translated_segments,
             'filename': srt_filename
         }
 

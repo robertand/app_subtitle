@@ -2961,6 +2961,10 @@
 
                 if (data.status === 'completed') {
                     console.log('Task completed successfully!');
+                    // Dacă e un rezultat de succes, ascundem avertismentul de heartbeat
+                    if (data.progress === 100) {
+                        updateProgress(100, 'Finalizat!');
+                    }
                     handleProcessingResult(data.result);
                 } else if (data.status === 'error') {
                     console.error('Task reported an error:', data.message);
@@ -3075,11 +3079,16 @@
             srtFilename = data.filename;
             processId = data.process_id || processId;
 
-            // Fallback: folosim datele din rezultat doar dacă fetch-ul de pe disc a eșuat
-            if (!currentSegments || currentSegments.length === 0) {
-                if (data.segments) currentSegments = data.segments;
+            // Prioritate: folosim datele direct din rezultat dacă sunt disponibile (evităm fetch-uri inutile)
+            if (data.segments) {
+                currentSegments = data.segments;
+                if (data.translation_used) translatedSegments = data.segments;
+                else originalSegments = data.segments;
+            } else if (!currentSegments || currentSegments.length === 0) {
+                // Fallback: folosim alte câmpuri din rezultat dacă fetch-ul de pe disc a eșuat
                 if (data.original_segments) originalSegments = data.original_segments;
                 if (data.translated_segments) translatedSegments = data.translated_segments;
+                currentSegments = translatedSegments || originalSegments;
             }
 
             imagePreviewUrl = data.image_preview_url;
@@ -3387,6 +3396,9 @@
 
                 downloadTranslatedBtn.style.display = 'none';
                 mainDownloadTranslatedBtn.style.display = 'none';
+
+                // Actualizează UI lista (pentru clasa active)
+                refreshTranslationsList();
             } else {
                 try {
                     // Dacă nu avem segmentele în memorie (doar meta-datele de la refresh)
