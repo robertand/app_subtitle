@@ -1750,9 +1750,10 @@ def background_processing_task(original_path, model_name, language, translation_
         print(f"Eroare în background_task: {traceback.format_exc()}")
         update_task_status(process_id, 'error', message=str(e))
     finally:
-        # Cleanup fișier original combinat
-        if os.path.exists(original_path):
-            try: os.remove(original_path)
+        # Nu mai ștergem fișierul original pentru a permite re-transcrierea
+        # Cleanup doar pentru chunk-uri dacă există
+        if 'audio_chunks_dir' in locals() and os.path.exists(audio_chunks_dir):
+            try: shutil.rmtree(audio_chunks_dir)
             except: pass
 
 @app.route('/api/chunk_upload/process/<session_id>', methods=['POST'])
@@ -1924,6 +1925,61 @@ def get_existing_translations():
             'translations': translations,
             'total_translations': len(translations)
         })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/retranscribe/<process_id>', methods=['POST'])
+def api_retranscribe(process_id):
+    """Refă transcrierea folosind un fișier existent și noi parametri"""
+    try:
+        process_dir = get_process_dir(process_id)
+        if not process_dir or not os.path.exists(process_dir):
+            return jsonify({'error': 'Procesul nu a fost găsit'}), 404
+
+        # Caută fișierul original în directorul procesului
+        # Excludem fișierele generate cunoscute
+        excluded_files = {'status.json', 'original_segments.json', 'playback.mp4', 'full_audio.wav', 'preview.jpg'}
+        all_files = os.listdir(process_dir)
+
+        original_files = [f for f in all_files if f not in excluded_files and
+                         not f.startswith('translated_segments_') and
+                         not f.endswith('.srt') and
+                         not f.startswith('transcription_')]
+
+        if not original_files:
+            # Fallback: caută orice fișier care nu e metadata de bază
+            metadata_exts = {'.json', '.srt'}
+            original_files = [f for f in all_files if os.path.splitext(f)[1].lower() not in metadata_exts and f != 'playback.mp4' and f != 'full_audio.wav']
+
+        if not original_files:
+            return jsonify({'error': 'Fișierul original nu mai există pe server'}), 400
+
+        original_filename = original_files[0]
+        original_path = os.path.join(process_dir, original_filename)
+
+        data = request.get_json()
+        model_name = data.get('model', DEFAULT_MODEL)
+        language = data.get('language', 'auto')
+        translation_target = data.get('translation_target')
+        adjust_segmentation = data.get('adjust_segmentation', True)
+        whisper_settings = data.get('whisper_settings')
+
+        # Repornește task-ul în background
+        thread = threading.Thread(target=background_processing_task, args=(
+            original_path,
+            model_name,
+            language,
+            translation_target,
+            adjust_segmentation,
+            process_id,
+            False, # extract_audio_only
+            original_filename,
+            whisper_settings
+        ))
+        thread.start()
+
+        return jsonify({'success': True, 'process_id': process_id, 'message': 'Re-transcrierea a început'})
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

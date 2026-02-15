@@ -1802,6 +1802,9 @@
                 <button class="btn download-btn" onclick="downloadSRT()">
                     <i class="fas fa-download"></i> Descarcă Fișier SRT
                 </button>
+                <button class="btn btn-secondary" onclick="retranscribe()" id="retranscribeBtn">
+                    <i class="fas fa-redo"></i> Refă Transcrierea
+                </button>
                 <button class="btn download-btn" onclick="downloadTranslatedSRT()" id="mainDownloadTranslatedBtn" style="display: none;">
                     <i class="fas fa-language"></i> Descarcă SRT Tradus
                 </button>
@@ -2059,6 +2062,66 @@
                 }
             }, 1000);
         });
+
+        // Retranscriere cu noi parametri
+        async function retranscribe() {
+            if (!processId) {
+                showToast('Nu există o sesiune activă', 'error');
+                return;
+            }
+
+            if (!confirm('Ești sigur că vrei să refaci transcrierea? Această acțiune va suprascrie rezultatele actuale.')) {
+                return;
+            }
+
+            try {
+                const retranscribeBtn = document.getElementById('retranscribeBtn');
+                retranscribeBtn.disabled = true;
+                retranscribeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Se re-procesează...';
+
+                // Ascunde rezultatele și arată loading
+                resultContainer.style.display = 'none';
+                loading.style.display = 'block';
+                progressContainer.style.display = 'block';
+                updateProgress(5, 'Se inițializează re-transcrierea...');
+
+                const response = await fetch(`/api/retranscribe/${processId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: currentModel,
+                        language: currentLanguage,
+                        translation_target: translationTarget || '',
+                        adjust_segmentation: adjustSegmentationCheckbox.checked,
+                        whisper_settings: {
+                            no_speech_threshold: document.getElementById('noSpeechThreshold').value,
+                            logprob_threshold: document.getElementById('logprobThreshold').value,
+                            compression_ratio_threshold: document.getElementById('compressionRatio').value,
+                            condition_on_previous_text: document.getElementById('conditionOnPreviousText').checked
+                        }
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast('Re-transcrierea a început în background', 'success');
+                    pollTaskStatus(processId);
+                } else {
+                    throw new Error(data.error || 'Eroare la re-transcriere');
+                }
+            } catch (error) {
+                console.error('Eroare la re-transcriere:', error);
+                showError(`Eroare: ${error.message}`);
+                loading.style.display = 'none';
+                resultContainer.style.display = 'block';
+                const retranscribeBtn = document.getElementById('retranscribeBtn');
+                retranscribeBtn.disabled = false;
+                retranscribeBtn.innerHTML = '<i class="fas fa-redo"></i> Refă Transcrierea';
+            }
+        }
 
         // Setări Whisper
         function setMusicMode() {
