@@ -2224,6 +2224,98 @@ def background_processing_task(original_path, model_name, language, translation_
             try: shutil.rmtree(audio_chunks_dir)
             except: pass
 
+def background_translation_task(process_id, target_lang):
+    """Task de fundal pentru traducerea segmentelor existente"""
+    try:
+        process_dir = get_process_dir(process_id)
+        update_task_status(process_id, 'processing', 10, f'Se pregătește traducerea în {target_lang}...')
+
+        # Încărcăm segmentele originale de pe disc
+        original_segments_path = os.path.join(process_dir, 'original_segments.json')
+        if not os.path.exists(original_segments_path):
+            update_task_status(process_id, 'failed', message='Fișierul cu segmente originale nu a fost găsit')
+            return
+
+        with open(original_segments_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            segments = data.get('segments', [])
+
+        if not segments:
+            update_task_status(process_id, 'failed', message='Nu există segmente pentru traducere')
+            return
+
+        update_task_status(process_id, 'processing', 20, f'Se traduce în {target_lang}...')
+
+        # Obține limba predominantă din raportul salvat
+        overall_lang = 'en'
+        try:
+            report_path = os.path.join(process_dir, 'language_report.json')
+            if os.path.exists(report_path):
+                with open(report_path, 'r', encoding='utf-8') as f:
+                    report = json.load(f)
+                    overall_lang = report.get('primary_language')
+                    if not overall_lang and report.get('chunks'):
+                        overall_lang = report['chunks'][0].get('language', 'en')
+
+                    if not overall_lang:
+                        overall_lang = 'en'
+        except:
+            pass
+
+        # Format pentru translate_multilingual_segments
+        whisper_segments = []
+        for seg in segments:
+            whisper_segments.append({
+                'start': seg['start'],
+                'end': seg['end'],
+                'text': seg['text'],
+                'detected_language': seg.get('language') or seg.get('detected_language')
+            })
+
+        # Traducem cu fallback la limba predominantă
+        translated = translate_multilingual_segments(whisper_segments, target_lang, process_id)
+
+        # Formatăm rezultatul
+        translated_segments = []
+        for i, segment in enumerate(translated):
+            translated_segments.append({
+                'id': i + 1,
+                'start': segment['start'],
+                'end': segment['end'],
+                'text': segment['text'].strip(),
+                'start_formatted': format_timestamp(segment['start']),
+                'end_formatted': format_timestamp(segment['end']),
+                'original': False,
+                'target_language': target_lang,
+                'source_language': segment.get('source_language', 'unknown')
+            })
+
+        # Salvăm pe disc
+        json_filename = f'translated_segments_{target_lang}.json'
+        with open(os.path.join(process_dir, json_filename), 'w', encoding='utf-8') as f:
+            json.dump({'segments': translated_segments}, f, ensure_ascii=False)
+
+        # Salvăm SRT
+        srt_filename = f"transcription_{process_id}_{target_lang}.srt"
+        write_srt(translated, os.path.join(process_dir, srt_filename))
+
+        # Update status
+        final_result = {
+            'success': True,
+            'is_translated': True,
+            'translation_used': target_lang,
+            'process_id': process_id,
+            'segment_count': len(translated_segments),
+            'segments': translated_segments,
+            'filename': srt_filename
+        }
+
+        update_task_status(process_id, 'completed', 100, f'Traducere în {target_lang} finalizată!', final_result)
+
+    except Exception as e:
+        print(f"Eroare în background_translation_task: {traceback.format_exc()}")
+        update_task_status(process_id, 'error', message=str(e))
+
 @app.route('/api/chunk_upload/process/<session_id>', methods=['POST'])
 def chunk_upload_process(session_id):
     """Inițiază procesarea în background a fișierului încărcat"""

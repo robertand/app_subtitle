@@ -981,6 +981,23 @@
             line-height: 1.4;
         }
         
+        .editable-time {
+            cursor: text;
+            padding: 0 4px;
+            border-radius: 4px;
+            background: rgba(102, 126, 234, 0.1);
+            border-bottom: 1px dashed #667eea;
+            display: inline-block;
+            min-width: 80px;
+            text-align: center;
+        }
+
+        .editable-time:focus {
+            background: white;
+            outline: 2px solid #667eea;
+            border-bottom: none;
+        }
+
         .full-text {
             background: #f8f9ff;
             padding: 15px;
@@ -3508,11 +3525,51 @@
         // Restul funcțiilor rămân la fel (displaySegments, toggleSegmentsTranslation, etc.)
         // ... (codul rămas este identic cu cel din versiunea anterioară)
         
-        // Actualizează textul segmentului în memoria locală
-        function updateSegmentLocal(id, newText) {
+        // Convertește formatul HH:MM:SS,mmm în secunde
+        function parseTimecode(timeStr) {
+            try {
+                // Suportă formate HH:MM:SS,mmm sau HH:MM:SS.mmm
+                const parts = timeStr.replace(',', '.').split(':');
+                if (parts.length !== 3) return null;
+
+                const hours = parseFloat(parts[0]);
+                const minutes = parseFloat(parts[1]);
+                const seconds = parseFloat(parts[2]);
+
+                if (isNaN(hours) || isNaN(minutes) || isNaN(seconds)) return null;
+
+                return (hours * 3600) + (minutes * 60) + seconds;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Actualizează un segment în memoria locală
+        function updateSegmentLocal(id, field, newValue) {
             const segment = currentSegments.find(s => s.id === id);
-            if (segment) {
-                segment.text = newText;
+            if (!segment) return;
+
+            if (field === 'text') {
+                segment.text = newValue;
+            } else if (field === 'start_formatted' || field === 'end_formatted') {
+                const seconds = parseTimecode(newValue);
+                if (seconds !== null) {
+                    segment[field] = newValue;
+                    if (field === 'start_formatted') {
+                        segment.start = seconds;
+                        // Actualizăm și atributul data-start pentru sync
+                        const el = document.querySelector(`.segment[data-id="${id}"]`);
+                        if (el) el.setAttribute('data-start', seconds);
+                    } else {
+                        segment.end = seconds;
+                        const el = document.querySelector(`.segment[data-id="${id}"]`);
+                        if (el) el.setAttribute('data-end', seconds);
+                    }
+                    console.log(`Updated segment ${id} ${field} to ${newValue} (${seconds}s)`);
+                } else {
+                    console.warn(`Invalid timecode format: ${newValue}`);
+                    showToast('Format timp invalid. Folosiți HH:MM:SS,mmm', 'error');
+                }
             }
         }
 
@@ -3583,13 +3640,18 @@
                 }
 
                 segmentsHtml += `
-                    <div class="segment" data-start="${segment.start}" data-end="${segment.end}">
+                    <div class="segment" data-id="${segment.id}" data-start="${segment.start}" data-end="${segment.end}">
                         <div class="segment-header">
                             <span><i class="fas fa-hashtag"></i> #${segment.id}</span>
-                            <span><i class="far fa-clock"></i> ${segment.start_formatted} → ${segment.end_formatted}</span>
+                            <span>
+                                <i class="far fa-clock"></i>
+                                <span contenteditable="true" class="editable-time" onblur="updateSegmentLocal(${segment.id}, 'start_formatted', this.innerText)">${segment.start_formatted}</span>
+                                →
+                                <span contenteditable="true" class="editable-time" onblur="updateSegmentLocal(${segment.id}, 'end_formatted', this.innerText)">${segment.end_formatted}</span>
+                            </span>
                             ${isTranslated ? `<span class="language-badge target">${targetLang}</span>` : ''}
                         </div>
-                        <div class="segment-text" contenteditable="true" onblur="updateSegmentLocal(${segment.id}, this.innerText)">${segment.text}</div>
+                        <div class="segment-text" contenteditable="true" onblur="updateSegmentLocal(${segment.id}, 'text', this.innerText)">${segment.text}</div>
                         ${isTranslated && originalText ? `
                             <div class="segment-translation" style="margin-top: 5px; opacity: 0.7; font-size: 0.9em; border-top: 1px solid #eee; padding-top: 5px;">
                                 <div style="color: #718096;"><i class="fas fa-quote-left"></i> ${originalText}</div>
