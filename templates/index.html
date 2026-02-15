@@ -3088,9 +3088,17 @@
             isMp4File = data.is_mp4 || false;
             
             // Actualizează lista de traduceri multiple
-            if (data.is_translated && data.translation_target) {
-                multipleTranslations[data.translation_target] = currentSegments;
-                currentTranslationLang = data.translation_target;
+            const usedLang = data.translation_used || data.translation_target;
+            if (data.is_translated && usedLang) {
+                multipleTranslations[usedLang] = currentSegments;
+                currentTranslationLang = usedLang;
+
+                // Păstrăm și numele fișierului SRT dacă există
+                if (data.filename) {
+                    if (!multipleTranslations[usedLang].srt_filename) {
+                        multipleTranslations[usedLang].srt_filename = data.filename;
+                    }
+                }
             }
             // Reîmprospătează lista din interfață
             refreshTranslationsList();

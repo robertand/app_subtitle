@@ -432,8 +432,22 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
                 # Creează segmentele traduse cu timecode-uri originale
                 for j, seg in enumerate(batch):
                     if j < len(translated_texts):
+                        trans_text = translated_texts[j].strip()
+                        orig_text = seg['text'].strip()
+
+                        # Verificare: dacă traducerea e identică cu originalul (hallucination/copy)
+                        # și originalul e suficient de lung pentru a nu fi doar un "ok"
+                        if trans_text == orig_text and len(orig_text) > 10:
+                            print(f"  ⚠️ Traducerea locală pare identică cu sursa pentru segmentul {i+j}. Încerc Google...")
+                            try:
+                                g_trans = GoogleTranslator(source=source_lang, target=target_lang).translate(orig_text)
+                                if g_trans:
+                                    trans_text = g_trans.strip()
+                            except:
+                                pass
+
                         translated_seg = seg.copy()
-                        translated_seg['text'] = translated_texts[j].strip()
+                        translated_seg['text'] = trans_text
                         translated_segments.append(translated_seg)
                     else:
                         # Fallback: păstrează textul original
@@ -466,7 +480,7 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
         print(f"✗ Eroare la traducere: {str(e)}")
         return segments
 
-def translate_multilingual_segments(segments, target_lang, process_id=None):
+def translate_multilingual_segments(segments, target_lang, process_id=None, overall_language='en'):
     """
     Traduce segmente care pot fi în mai multe limbi sursă.
     Detectează automat limba fiecărui segment și folosește modelul potrivit.
@@ -482,10 +496,10 @@ def translate_multilingual_segments(segments, target_lang, process_id=None):
 
     # Grupăm segmentele după limba sursă
     for seg in segments:
-        # Folosește detected_language dacă este disponibil (setat în process_large_file)
-        source_lang = seg.get('detected_language', seg.get('language'))
-        if not source_lang or source_lang == 'unknown':
-            source_lang = 'en' # Default la engleză dacă nu știm
+        # Folosește detected_language dacă este disponibil
+        source_lang = seg.get('detected_language') or seg.get('language')
+        if not source_lang or source_lang == 'unknown' or source_lang == 'auto':
+            source_lang = overall_language or 'en'
 
         if source_lang not in language_groups:
             language_groups[source_lang] = []
@@ -1263,16 +1277,21 @@ def apply_timing_padding(segments, padding=0.5, max_gap=1.5):
             segments[i]['end'] = min(segments[i]['end'] + padding, segments[i+1]['start'])
     return segments
 
-def adjust_segmentation_algorithm(segments, min_duration=1.2, max_duration=6.0, max_chars=85):
+def adjust_segmentation_algorithm(segments, min_duration=1.0, max_duration=5.0, max_chars=80):
     """
     Ajustează segmentarea utilizând word timestamps dacă sunt disponibile.
     Gruparea este mai inteligentă și se potrivește mai bine cu ritmul vorbirii.
+    Păstrează metadatele precum limba detectată.
     """
     all_words = []
     for seg in segments:
+        seg_lang = seg.get('detected_language') or seg.get('language')
         if 'words' in seg and seg['words']:
             # Folosim word timestamps pentru precizie maximă
-            all_words.extend(seg['words'])
+            for w in seg['words']:
+                word_item = w.copy()
+                word_item['detected_language'] = seg_lang
+                all_words.append(word_item)
         else:
             # Fallback: împărțim textul existent în cuvinte (fără timing precis per cuvânt)
             words = seg['text'].strip().split()
@@ -1283,7 +1302,8 @@ def adjust_segmentation_algorithm(segments, min_duration=1.2, max_duration=6.0, 
                 all_words.append({
                     'word': w,
                     'start': seg['start'] + (i * word_duration),
-                    'end': seg['start'] + ((i + 1) * word_duration)
+                    'end': seg['start'] + ((i + 1) * word_duration),
+                    'detected_language': seg_lang
                 })
 
     if not all_words:
@@ -1293,11 +1313,13 @@ def adjust_segmentation_algorithm(segments, min_duration=1.2, max_duration=6.0, 
     current_words = []
     current_text = ""
     current_start = all_words[0]['start']
+    current_lang = all_words[0].get('detected_language')
 
     for i, word_info in enumerate(all_words):
         word = word_info['word']
         start = word_info['start']
         end = word_info['end']
+        lang = word_info.get('detected_language')
 
         clean_word = word.strip()
         if not clean_word and len(current_words) > 0: continue
@@ -1312,19 +1334,24 @@ def adjust_segmentation_algorithm(segments, min_duration=1.2, max_duration=6.0, 
             should_split = True
         elif duration > max_duration:
             should_split = True
-        # Dacă există o pauză mare înainte de acest cuvânt, începem segment nou
-        elif i > 0 and (start - all_words[i-1]['end']) > 0.8:
+        # Dacă există o pauză semnificativă (peste 0.3s), tăiem pentru a fi mai "tight" pe voce
+        elif i > 0 and (start - all_words[i-1]['end']) > 0.3:
+            should_split = True
+        # Dacă s-a schimbat limba (la granița de chunk)
+        elif lang != current_lang:
             should_split = True
 
         if should_split and current_words:
             adjusted_segments.append({
                 'start': current_start,
                 'end': current_words[-1]['end'],
-                'text': current_text.strip()
+                'text': current_text.strip(),
+                'detected_language': current_lang
             })
             current_words = []
             current_text = ""
             current_start = start
+            current_lang = lang
             proposed_text = clean_word
 
         current_words.append(word_info)
@@ -1334,7 +1361,8 @@ def adjust_segmentation_algorithm(segments, min_duration=1.2, max_duration=6.0, 
         adjusted_segments.append({
             'start': current_start,
             'end': current_words[-1]['end'],
-            'text': current_text.strip()
+            'text': current_text.strip(),
+            'detected_language': current_lang
         })
 
     # Merge segmente prea scurte și padding
@@ -2025,7 +2053,7 @@ def background_processing_task(original_path, model_name, language, translation_
             translation_start = time.time()
             try:
                 # Folosește traducerea multilingvă care ține cont de limba fiecărui segment
-                translated = translate_multilingual_segments(segments, translation_target, process_id)
+                translated = translate_multilingual_segments(segments, translation_target, process_id, overall_language=detected_language)
                 translation_time = time.time() - translation_start
 
                 # Creăm segmentele traduse
@@ -2161,6 +2189,17 @@ def background_translation_task(process_id, target_lang):
 
         update_task_status(process_id, 'processing', 20, f'Se traduce în {target_lang}...')
 
+        # Obține limba predominantă din raportul salvat
+        overall_lang = 'en'
+        try:
+            report_path = os.path.join(process_dir, 'language_report.json')
+            if os.path.exists(report_path):
+                with open(report_path, 'r', encoding='utf-8') as f:
+                    report = json.load(f)
+                    overall_lang = report.get('primary_language', 'en')
+        except:
+            pass
+
         # Format pentru translate_multilingual_segments
         whisper_segments = []
         for seg in segments:
@@ -2171,8 +2210,8 @@ def background_translation_task(process_id, target_lang):
                 'detected_language': seg.get('language') or seg.get('detected_language')
             })
 
-        # Traducem
-        translated = translate_multilingual_segments(whisper_segments, target_lang, process_id)
+        # Traducem cu fallback la limba predominantă
+        translated = translate_multilingual_segments(whisper_segments, target_lang, process_id, overall_language=overall_lang)
 
         # Formatăm rezultatul
         translated_segments = []
