@@ -509,7 +509,8 @@ def translate_multilingual_segments(segments, target_lang, process_id=None):
 
     # Grupăm segmentele după limba sursă
     for seg in segments:
-        source_lang = seg.get('language', 'en')  # Default engleză
+        # Prioritate: detected_language (pus de noi), apoi language (pus de Whisper), apoi default 'en'
+        source_lang = seg.get('detected_language') or seg.get('language') or 'en'
         if source_lang not in language_groups:
             language_groups[source_lang] = []
         language_groups[source_lang].append(seg)
@@ -1518,6 +1519,10 @@ def process_large_file(file_path, model_name, language, translation_target,
     """Procesează un fișier folosind tehnici optimizate pentru feedback granular"""
     print(f"Procesez fișierul: {file_path}")
 
+    # Safety check: asigura-te ca fisierul este valid media
+    if not allowed_file(file_path):
+        raise ValueError(f"Fișierul {os.path.basename(file_path)} nu este un format media acceptat.")
+
     try:
         # Încarcă modelul
         model_data = load_model(model_name)
@@ -1774,6 +1779,11 @@ def process_normal_file(file_path, model, device, language, translation_target,
                        should_adjust_segmentation, process_id, is_video, is_mp4,
                        extract_audio_only=False, whisper_settings=None):
     """Procesează un fișier folosind metoda normală"""
+
+    # Safety check
+    if not allowed_file(file_path):
+        raise ValueError(f"Fișierul {os.path.basename(file_path)} nu este un format media acceptat.")
+
     audio_path = file_path
     
     # Încearcă să extragă audio dacă este video
@@ -2395,22 +2405,16 @@ def api_retranscribe(process_id):
             return jsonify({'error': 'Procesul nu a fost găsit'}), 404
 
         # Caută fișierul original în directorul procesului
-        # Excludem fișierele generate cunoscute
-        excluded_files = {'status.json', 'original_segments.json', 'playback.mp4', 'full_audio.wav', 'preview.jpg'}
+        # Folosim funcția allowed_file pentru a identifica fișierele media valide
         all_files = os.listdir(process_dir)
 
-        original_files = [f for f in all_files if f not in excluded_files and
-                         not f.startswith('translated_segments_') and
-                         not f.endswith('.srt') and
-                         not f.startswith('transcription_')]
+        # Fișiere generate pe care le excludem chiar dacă au extensie validă (ex: playback.mp4)
+        generated_files = {'playback.mp4', 'full_audio.wav', 'extracted_audio.mp3'}
+
+        original_files = [f for f in all_files if allowed_file(f) and f not in generated_files]
 
         if not original_files:
-            # Fallback: caută orice fișier care nu e metadata de bază
-            metadata_exts = {'.json', '.srt'}
-            original_files = [f for f in all_files if os.path.splitext(f)[1].lower() not in metadata_exts and f != 'playback.mp4' and f != 'full_audio.wav']
-
-        if not original_files:
-            return jsonify({'error': 'Fișierul original nu mai există pe server'}), 400
+            return jsonify({'error': 'Fișierul original media nu a fost găsit în directorul procesului.'}), 400
 
         original_filename = original_files[0]
         original_path = os.path.join(process_dir, original_filename)
