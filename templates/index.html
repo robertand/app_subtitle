@@ -1748,6 +1748,15 @@
                         <input type="checkbox" id="conditionOnPreviousText" name="condition_on_previous_text" checked>
                         <label for="conditionOnPreviousText">Condition on previous text (Recomandat: ON)</label>
                     </div>
+
+                    <div class="control-group" style="margin-top: 15px;">
+                        <label for="initialPrompt">
+                            <span>Prompt Inițial (context):</span>
+                        </label>
+                        <input type="text" id="initialPrompt" name="initial_prompt" placeholder="Ex: Interviu despre tehnologie..."
+                               style="width: 100%; padding: 8px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 0.9em;">
+                        <small style="color: #718096; font-size: 0.75em;">Ajută Whisper cu terminologia sau contextul.</small>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2231,7 +2240,8 @@
                             no_speech_threshold: document.getElementById('noSpeechThreshold').value,
                             logprob_threshold: document.getElementById('logprobThreshold').value,
                             compression_ratio_threshold: document.getElementById('compressionRatio').value,
-                            condition_on_previous_text: document.getElementById('conditionOnPreviousText').checked
+                            condition_on_previous_text: document.getElementById('conditionOnPreviousText').checked,
+                            initial_prompt: document.getElementById('initialPrompt').value
                         }
                     })
                 });
@@ -2257,16 +2267,16 @@
 
         // Setări Whisper
         function setMusicMode() {
-            document.getElementById('noSpeechThreshold').value = 0.30;
+            document.getElementById('noSpeechThreshold').value = 0.85;
             document.getElementById('logprobThreshold').value = -2.0;
             document.getElementById('compressionRatio').value = 2.8;
             document.getElementById('conditionOnPreviousText').checked = false;
 
-            document.getElementById('noSpeechThresholdValue').textContent = "0.30";
+            document.getElementById('noSpeechThresholdValue').textContent = "0.85";
             document.getElementById('logprobThresholdValue').textContent = "-2.0";
             document.getElementById('compressionRatioValue').textContent = "2.8";
 
-            showToast('Mod Muzică activat: Sensibilitate crescută', 'info');
+            showToast('Mod Muzică activat: Sensibilitate crescută la voce în ambiant', 'info');
         }
 
         function resetWhisperSettings() {
@@ -2274,6 +2284,7 @@
             document.getElementById('logprobThreshold').value = -1.0;
             document.getElementById('compressionRatio').value = 2.4;
             document.getElementById('conditionOnPreviousText').checked = true;
+            document.getElementById('initialPrompt').value = '';
 
             document.getElementById('noSpeechThresholdValue').textContent = "0.60";
             document.getElementById('logprobThresholdValue').textContent = "-1.0";
@@ -3205,7 +3216,8 @@
                             no_speech_threshold: document.getElementById('noSpeechThreshold').value,
                             logprob_threshold: document.getElementById('logprobThreshold').value,
                             compression_ratio_threshold: document.getElementById('compressionRatio').value,
-                            condition_on_previous_text: document.getElementById('conditionOnPreviousText').checked
+                            condition_on_previous_text: document.getElementById('conditionOnPreviousText').checked,
+                            initial_prompt: document.getElementById('initialPrompt').value
                         }
                     })
                 });

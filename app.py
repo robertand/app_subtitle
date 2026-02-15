@@ -1649,29 +1649,38 @@ def process_large_file(file_path, model_name, language, translation_target,
                         # Verifică durata chunk-ului
                         chunk_dur = get_video_duration(audio_chunk_path)
                         if chunk_dur and chunk_dur > 0.1:
-                            # 🔴 MODIFICARE IMPORTANTĂ: NU mai setăm limba la nivel global
-                            # Lăsăm Whisper să detecteze limba pentru FIECARE chunk
+                            # 🔴 MODIFICARE IMPORTANTĂ: Folosim limba selectată de utilizator dacă există
+                            # Altfel lăsăm Whisper să detecteze limba pentru FIECARE chunk
                             transcribe_kwargs = {
                                 'task': 'transcribe',
                                 'fp16': (device == "cuda")
                             }
-                            # NU setăm language aici - lăsăm detectarea automată pentru fiecare chunk
+                            if language != 'auto':
+                                transcribe_kwargs['language'] = language
 
                             # Adaugă setări Whisper avansate dacă există
                             if whisper_settings:
-                                if 'no_speech_threshold' in whisper_settings:
+                                if 'no_speech_threshold' in whisper_settings and whisper_settings['no_speech_threshold'] is not None:
                                     transcribe_kwargs['no_speech_threshold'] = float(whisper_settings['no_speech_threshold'])
-                                if 'logprob_threshold' in whisper_settings:
+                                if 'logprob_threshold' in whisper_settings and whisper_settings['logprob_threshold'] is not None:
                                     transcribe_kwargs['logprob_threshold'] = float(whisper_settings['logprob_threshold'])
-                                if 'compression_ratio_threshold' in whisper_settings:
+                                if 'compression_ratio_threshold' in whisper_settings and whisper_settings['compression_ratio_threshold'] is not None:
                                     transcribe_kwargs['compression_ratio_threshold'] = float(whisper_settings['compression_ratio_threshold'])
-                                if 'condition_on_previous_text' in whisper_settings:
+                                if 'condition_on_previous_text' in whisper_settings and whisper_settings['condition_on_previous_text'] is not None:
                                     # Convertim din string 'true'/'false' dacă vine de la form data
                                     val = whisper_settings['condition_on_previous_text']
                                     if isinstance(val, str):
                                         transcribe_kwargs['condition_on_previous_text'] = val.lower() == 'true'
                                     else:
                                         transcribe_kwargs['condition_on_previous_text'] = bool(val)
+                                if 'initial_prompt' in whisper_settings and whisper_settings['initial_prompt']:
+                                    transcribe_kwargs['initial_prompt'] = whisper_settings['initial_prompt']
+
+                            # Default values for robustness if not set by user
+                            if 'no_speech_threshold' not in transcribe_kwargs:
+                                transcribe_kwargs['no_speech_threshold'] = 0.6
+                            if 'logprob_threshold' not in transcribe_kwargs:
+                                transcribe_kwargs['logprob_threshold'] = -1.0
 
                             chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
 
@@ -1805,18 +1814,20 @@ def process_normal_file(file_path, model, device, language, translation_target,
 
     # Adaugă setări Whisper avansate dacă există
     if whisper_settings:
-        if 'no_speech_threshold' in whisper_settings:
+        if 'no_speech_threshold' in whisper_settings and whisper_settings['no_speech_threshold'] is not None:
             transcribe_kwargs['no_speech_threshold'] = float(whisper_settings['no_speech_threshold'])
-        if 'logprob_threshold' in whisper_settings:
+        if 'logprob_threshold' in whisper_settings and whisper_settings['logprob_threshold'] is not None:
             transcribe_kwargs['logprob_threshold'] = float(whisper_settings['logprob_threshold'])
-        if 'compression_ratio_threshold' in whisper_settings:
+        if 'compression_ratio_threshold' in whisper_settings and whisper_settings['compression_ratio_threshold'] is not None:
             transcribe_kwargs['compression_ratio_threshold'] = float(whisper_settings['compression_ratio_threshold'])
-        if 'condition_on_previous_text' in whisper_settings:
+        if 'condition_on_previous_text' in whisper_settings and whisper_settings['condition_on_previous_text'] is not None:
             val = whisper_settings['condition_on_previous_text']
             if isinstance(val, str):
                 transcribe_kwargs['condition_on_previous_text'] = val.lower() == 'true'
             else:
                 transcribe_kwargs['condition_on_previous_text'] = bool(val)
+        if 'initial_prompt' in whisper_settings and whisper_settings['initial_prompt']:
+            transcribe_kwargs['initial_prompt'] = whisper_settings['initial_prompt']
     
     try:
         print(f"Transcriere fișier: {audio_path}")
@@ -2675,7 +2686,8 @@ def upload_file():
         'no_speech_threshold': request.form.get('no_speech_threshold'),
         'logprob_threshold': request.form.get('logprob_threshold'),
         'compression_ratio_threshold': request.form.get('compression_ratio_threshold'),
-        'condition_on_previous_text': request.form.get('condition_on_previous_text')
+        'condition_on_previous_text': request.form.get('condition_on_previous_text'),
+        'initial_prompt': request.form.get('initial_prompt')
     }
     # Curățăm setările None
     whisper_settings = {k: v for k, v in whisper_settings.items() if v is not None}
