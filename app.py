@@ -1170,7 +1170,8 @@ def cleanup_upload_session(session_id):
             del upload_sessions[session_id]
 
 def process_large_file(file_path, model_name, language, translation_target,
-                      should_adjust_segmentation, process_id, extract_audio_only=False):
+                      should_adjust_segmentation, process_id, extract_audio_only=False,
+                      whisper_settings=None):
     """Procesează un fișier folosind tehnici optimizate pentru feedback granular"""
     print(f"Procesez fișierul: {file_path}")
 
@@ -1311,6 +1312,22 @@ def process_large_file(file_path, model_name, language, translation_target,
                             if language != 'auto':
                                 transcribe_kwargs['language'] = language
 
+                            # Adaugă setări Whisper avansate dacă există
+                            if whisper_settings:
+                                if 'no_speech_threshold' in whisper_settings:
+                                    transcribe_kwargs['no_speech_threshold'] = float(whisper_settings['no_speech_threshold'])
+                                if 'logprob_threshold' in whisper_settings:
+                                    transcribe_kwargs['logprob_threshold'] = float(whisper_settings['logprob_threshold'])
+                                if 'compression_ratio_threshold' in whisper_settings:
+                                    transcribe_kwargs['compression_ratio_threshold'] = float(whisper_settings['compression_ratio_threshold'])
+                                if 'condition_on_previous_text' in whisper_settings:
+                                    # Convertim din string 'true'/'false' dacă vine de la form data
+                                    val = whisper_settings['condition_on_previous_text']
+                                    if isinstance(val, str):
+                                        transcribe_kwargs['condition_on_previous_text'] = val.lower() == 'true'
+                                    else:
+                                        transcribe_kwargs['condition_on_previous_text'] = bool(val)
+
                             chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
                         else:
                             print(f"Chunk {chunk_idx} prea scurt: {chunk_dur}s")
@@ -1359,14 +1376,16 @@ def process_large_file(file_path, model_name, language, translation_target,
             # Fallback la procesare normală
             return process_normal_file(file_path, model, device, language,
                                      translation_target, should_adjust_segmentation,
-                                     process_id, is_video, is_mp4)
+                                     process_id, is_video, is_mp4,
+                                     whisper_settings=whisper_settings)
         
     except Exception as e:
         print(f"Eroare la procesarea fișierului: {str(e)}")
         raise
 
 def process_normal_file(file_path, model, device, language, translation_target,
-                       should_adjust_segmentation, process_id, is_video, is_mp4, extract_audio_only=False):
+                       should_adjust_segmentation, process_id, is_video, is_mp4,
+                       extract_audio_only=False, whisper_settings=None):
     """Procesează un fișier folosind metoda normală"""
     audio_path = file_path
     
@@ -1401,6 +1420,21 @@ def process_normal_file(file_path, model, device, language, translation_target,
     
     if language != 'auto':
         transcribe_kwargs['language'] = language
+
+    # Adaugă setări Whisper avansate dacă există
+    if whisper_settings:
+        if 'no_speech_threshold' in whisper_settings:
+            transcribe_kwargs['no_speech_threshold'] = float(whisper_settings['no_speech_threshold'])
+        if 'logprob_threshold' in whisper_settings:
+            transcribe_kwargs['logprob_threshold'] = float(whisper_settings['logprob_threshold'])
+        if 'compression_ratio_threshold' in whisper_settings:
+            transcribe_kwargs['compression_ratio_threshold'] = float(whisper_settings['compression_ratio_threshold'])
+        if 'condition_on_previous_text' in whisper_settings:
+            val = whisper_settings['condition_on_previous_text']
+            if isinstance(val, str):
+                transcribe_kwargs['condition_on_previous_text'] = val.lower() == 'true'
+            else:
+                transcribe_kwargs['condition_on_previous_text'] = bool(val)
     
     try:
         print(f"Transcriere fișier: {audio_path}")
@@ -1588,7 +1622,8 @@ def chunk_upload_status(session_id):
         return jsonify({'error': f'Eroare: {str(e)}'}), 500
 
 def background_processing_task(original_path, model_name, language, translation_target,
-                             should_adjust_segmentation, process_id, extract_audio_only, original_filename):
+                             should_adjust_segmentation, process_id, extract_audio_only,
+                             original_filename, whisper_settings=None):
     """Task de procesare care rulează în background"""
     try:
         update_task_status(process_id, 'processing', 5, 'Inițializare procesare...')
@@ -1596,7 +1631,8 @@ def background_processing_task(original_path, model_name, language, translation_
         # Procesează fișierul
         process_result = process_large_file(
             original_path, model_name, language, translation_target,
-            should_adjust_segmentation, process_id, extract_audio_only
+            should_adjust_segmentation, process_id, extract_audio_only,
+            whisper_settings=whisper_settings
         )
 
         if process_result is None:
@@ -1747,7 +1783,8 @@ def chunk_upload_process(session_id):
             data.get('adjust_segmentation', True),
             process_id,
             data.get('extract_audio_only', False),
-            session_info['file_name']
+            session_info['file_name'],
+            data.get('whisper_settings')
         ))
         thread.start()
 
@@ -2130,6 +2167,18 @@ def upload_file():
     translation_target = request.form.get('translation_target', session.get('translation_target', None))
     should_adjust_segmentation = request.form.get('adjust_segmentation', 'true').lower() == 'true'
     
+    # Extragere setări Whisper din form (pentru upload simplu)
+    whisper_settings = {
+        'no_speech_threshold': request.form.get('no_speech_threshold'),
+        'logprob_threshold': request.form.get('logprob_threshold'),
+        'compression_ratio_threshold': request.form.get('compression_ratio_threshold'),
+        'condition_on_previous_text': request.form.get('condition_on_previous_text')
+    }
+    # Curățăm setările None
+    whisper_settings = {k: v for k, v in whisper_settings.items() if v is not None}
+    if not whisper_settings:
+        whisper_settings = None
+
     if model_name not in AVAILABLE_MODELS:
         model_name = DEFAULT_MODEL
     
@@ -2163,7 +2212,8 @@ def upload_file():
         
         process_result = process_normal_file(
             original_path, model, device, language, translation_target,
-            should_adjust_segmentation, process_id, is_video, is_mp4
+            should_adjust_segmentation, process_id, is_video, is_mp4,
+            whisper_settings=whisper_settings
         )
 
         result = process_result['result']
