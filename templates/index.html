@@ -16,9 +16,10 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
+            padding-top: 60px; /* Space for fixed header/menu */
             display: flex;
             justify-content: center;
-            align-items: center;
+            align-items: flex-start;
         }
         
         .container {
@@ -28,7 +29,203 @@
             width: 100%;
             max-width: 1400px;
             padding: 30px;
-            margin: 20px;
+            margin: 20px auto;
+        }
+
+        /* Sidebar & Menu Styles */
+        .sidebar-toggle {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 1001;
+            background: white;
+            border: none;
+            width: 45px;
+            height: 45px;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 5px;
+            transition: all 0.3s;
+        }
+
+        .sidebar-toggle span {
+            display: block;
+            width: 25px;
+            height: 3px;
+            background: #667eea;
+            border-radius: 2px;
+            transition: all 0.3s;
+        }
+
+        .sidebar-toggle:hover {
+            transform: scale(1.05);
+            background: #f0f4ff;
+        }
+
+        .sidebar-toggle.active span:nth-child(1) { transform: translateY(8px) rotate(45deg); }
+        .sidebar-toggle.active span:nth-child(2) { opacity: 0; }
+        .sidebar-toggle.active span:nth-child(3) { transform: translateY(-8px) rotate(-45deg); }
+
+        .sidebar-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            display: none;
+            backdrop-filter: blur(3px);
+        }
+
+        .sidebar {
+            position: fixed;
+            top: 0;
+            left: -300px;
+            width: 300px;
+            height: 100%;
+            background: white;
+            z-index: 1001;
+            box-shadow: 5px 0 25px rgba(0,0,0,0.2);
+            transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            overflow-y: auto;
+            padding-top: 80px;
+        }
+
+        .sidebar.active {
+            left: 0;
+        }
+
+        .menu-section {
+            padding: 10px 0;
+            border-bottom: 1px solid #f0f4ff;
+        }
+
+        .menu-title {
+            padding: 10px 25px;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #a0aec0;
+            font-weight: bold;
+        }
+
+        .menu-item {
+            padding: 12px 25px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: #4a5568;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .menu-item:hover {
+            background: #f7fafc;
+            color: #667eea;
+            padding-left: 30px;
+        }
+
+        .menu-item i {
+            width: 20px;
+            text-align: center;
+            color: #718096;
+        }
+
+        .menu-item:hover i {
+            color: #667eea;
+        }
+
+        .submenu {
+            background: #f8fafc;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+
+        .menu-item.has-submenu::after {
+            content: '\f105';
+            font-family: 'Font Awesome 5 Free';
+            font-weight: 900;
+            margin-left: auto;
+            transition: transform 0.3s;
+        }
+
+        .menu-item.has-submenu.open::after {
+            transform: rotate(90deg);
+        }
+
+        .menu-item.has-submenu.open + .submenu {
+            max-height: 500px;
+        }
+
+        .submenu-item {
+            padding: 10px 25px 10px 55px;
+            font-size: 0.9rem;
+            color: #718096;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .submenu-item:hover {
+            color: #667eea;
+            background: #edf2f7;
+        }
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.6);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
+            backdrop-filter: blur(5px);
+        }
+
+        .modal-content {
+            background: white;
+            width: 90%;
+            max-width: 900px;
+            max-height: 85vh;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+            position: relative;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #edf2f7;
+        }
+
+        .close-modal {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            color: #a0aec0;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .close-modal:hover {
+            color: #e53e3e;
         }
         
         h1 {
@@ -1177,89 +1374,38 @@
             transform: scale(1.1);
         }
         
-        /* Multiple Translations Panel */
-        .multiple-translations-panel {
-            background: #fffaf0;
-            border-radius: 12px;
-            padding: 20px;
-            margin: 20px 0;
-            border: 2px solid #d69e2e;
-            display: none;
-            animation: fadeIn 0.5s;
-        }
-        
-        .multiple-translations-header {
+        /* Result Header & Translation Selector */
+        .result-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 15px;
-        }
-        
-        .multiple-translations-header h3 {
-            color: #d69e2e;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin: 0;
-        }
-        
-        .translations-list {
-            display: flex;
+            margin-bottom: 20px;
             flex-wrap: wrap;
-            gap: 10px;
-            margin: 15px 0;
+            gap: 15px;
         }
-        
-        .translation-item {
-            background: white;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            padding: 10px 15px;
+
+        .version-selector {
             display: flex;
             align-items: center;
             gap: 10px;
-            transition: all 0.3s;
+            background: #f0f4ff;
+            padding: 5px 15px;
+            border-radius: 12px;
+            border: 1px solid #dce4ff;
         }
-        
-        .translation-item:hover {
-            border-color: #d69e2e;
-            transform: translateY(-2px);
-        }
-        
-        .translation-item.active {
-            border-color: #38a169;
-            background: #f0fff4;
-        }
-        
-        .translation-lang {
+
+        .version-selector label {
+            font-size: 0.85rem;
+            color: #667eea;
             font-weight: bold;
-            color: #2d3748;
         }
-        
-        .translation-action {
-            background: #4299e1;
-            color: white;
+
+        .version-selector select {
             border: none;
-            padding: 4px 10px;
-            border-radius: 15px;
-            font-size: 0.8em;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        
-        .translation-action:hover {
-            background: #3182ce;
-        }
-        
-        .new-translation-controls {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            margin-top: 15px;
-        }
-        
-        .new-translation-controls select {
-            flex: 1;
+            background: transparent;
+            padding: 5px;
+            font-weight: 500;
+            color: #4a5568;
         }
         
         /* Project Library */
@@ -1466,70 +1612,149 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
+    <!-- Sidebar Toggle Button -->
+    <button class="sidebar-toggle" id="sidebarToggle" title="Meniu">
+        <span></span>
+        <span></span>
+        <span></span>
+    </button>
+
+    <!-- Sidebar Overlay -->
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- Sidebar -->
+    <div class="sidebar" id="sidebar">
+        <div class="menu-section">
+            <div class="menu-title">Sistem</div>
+            <div class="menu-item" style="font-size: 0.8rem; flex-direction: column; align-items: flex-start; gap: 5px;">
+                <div id="sidebarDeviceInfo"><i class="fas fa-microchip"></i> CPU: -</div>
+                <div id="sidebarMemoryInfo"><i class="fas fa-hdd"></i> Mem: -</div>
+            </div>
+        </div>
+
+        <div class="menu-section">
+            <div class="menu-title">Proiect</div>
+            <div class="menu-item has-submenu" id="fileMenu">
+                <i class="fas fa-file"></i> File
+            </div>
+            <div class="submenu">
+                <div class="submenu-item" onclick="showProjectsModal(); closeSidebar()"><i class="fas fa-folder-open"></i> Deschide (Bibliotecă)</div>
+                <div class="submenu-item" onclick="document.getElementById('importFile').click(); closeSidebar()"><i class="fas fa-file-import"></i> Import .stum</div>
+                <div class="submenu-item" onclick="exportCurrentProject(); closeSidebar()"><i class="fas fa-file-export"></i> Export .stum</div>
+                <div class="submenu-item" onclick="quickPreview(); closeSidebar()"><i class="fas fa-eye"></i> Previzualizare Rapidă</div>
+                <div class="submenu-item" onclick="resetApp(); closeSidebar()"><i class="fas fa-times-circle"></i> Închide (Reset)</div>
+            </div>
+
+            <div class="menu-item has-submenu" id="editMenu">
+                <i class="fas fa-edit"></i> Edit
+            </div>
+            <div class="submenu">
+                <div class="submenu-item" onclick="saveEdits(); closeSidebar()"><i class="fas fa-save"></i> Salvează Modificări</div>
+                <div class="submenu-item" onclick="renameCurrentProject(); closeSidebar()"><i class="fas fa-tag"></i> Redenumește Proiect</div>
+                <div class="submenu-item" onclick="deleteCurrentProject(); closeSidebar()"><i class="fas fa-trash"></i> Șterge Proiect</div>
+            </div>
+        </div>
+
+        <div class="menu-section">
+            <div class="menu-title">Configurare</div>
+            <div class="menu-item has-submenu" id="modelMenu">
+                <i class="fas fa-brain"></i> Model Whisper
+            </div>
+            <div class="submenu" id="modelSubmenu">
+                <!-- Models will be injected here -->
+            </div>
+
+            <div class="menu-item has-submenu" id="transcribeMenu">
+                <i class="fas fa-microphone-alt"></i> Limbă Sursă
+            </div>
+            <div class="submenu" id="transcribeSubmenu">
+                <div class="submenu-item" onclick="setLanguage('auto'); closeSidebar()">Auto-detectare</div>
+                <!-- Languages will be injected here -->
+            </div>
+
+            <div class="menu-item has-submenu" id="translateMenu">
+                <i class="fas fa-language"></i> Limbă Țintă
+            </div>
+            <div class="submenu" id="translateSubmenu">
+                <div class="submenu-item" onclick="toggleTranslation(); closeSidebar()"><i class="fas fa-power-off"></i> Activare/Dezactivare</div>
+                <!-- Target languages will be injected here -->
+            </div>
+
+            <div class="menu-item has-submenu">
+                <i class="fas fa-sliders-h"></i> Opțiuni Segmentare
+            </div>
+            <div class="submenu" style="padding: 15px;">
+                <div class="checkbox-group" style="margin-bottom: 10px;">
+                    <input type="checkbox" id="sidebarAdjustSegmentation" onchange="syncSettings('adjust', this.checked)" checked>
+                    <label for="sidebarAdjustSegmentation" style="font-size: 0.85rem;">Ajustare automată</label>
+                </div>
+                <div class="checkbox-group" style="margin-bottom: 15px;">
+                    <input type="checkbox" id="sidebarExtractAudioOnly" onchange="syncSettings('audio', this.checked)">
+                    <label for="sidebarExtractAudioOnly" style="font-size: 0.85rem;">Doar audio</label>
+                </div>
+
+                <div class="control-group">
+                    <label style="font-size: 0.75rem;">Min durată: <span id="sidebarMinDurVal">1.0s</span></label>
+                    <input type="range" min="0.5" max="3.0" step="0.1" value="1.0" oninput="syncSettings('min', this.value)">
+                </div>
+                <div class="control-group">
+                    <label style="font-size: 0.75rem;">Max durată: <span id="sidebarMaxDurVal">5.0s</span></label>
+                    <input type="range" min="3.0" max="10.0" step="0.1" value="5.0" oninput="syncSettings('max', this.value)">
+                </div>
+                <div class="control-group">
+                    <label style="font-size: 0.75rem;">Max caractere: <span id="sidebarMaxCharsVal">80</span></label>
+                    <input type="range" min="40" max="120" step="1" value="80" oninput="syncSettings('chars', this.value)">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Project Library Modal -->
+    <div class="modal" id="projectsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-folder-open"></i> Biblioteca de Proiecte</h3>
+                <button class="close-modal" onclick="closeProjectsModal()">&times;</button>
+            </div>
+            <div class="project-grid" id="projectGridListModal">
+                <!-- Projects will be listed here -->
+            </div>
+            <div style="margin-top: 20px; text-align: right;">
+                <button class="btn btn-secondary" onclick="closeProjectsModal()">Închide</button>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <h1><i class="fas fa-closed-captioning"></i> Transcriere Video/Audio cu Upload Segmentat</h1>
         <p class="subtitle">Suportă fișiere mari până la 50GB • Upload în bucăți • Procesare optimizată</p>
 
-        <!-- Project Library -->
-        <div class="project-library" id="projectLibrary">
-            <div class="project-library-header">
-                <h3><i class="fas fa-folder-open"></i> Biblioteca de Proiecte</h3>
-                <div style="display: flex; gap: 10px;">
-                    <button class="project-btn rename" onclick="document.getElementById('importFile').click()">
-                        <i class="fas fa-file-import"></i> Import .stum
-                    </button>
-                    <input type="file" id="importFile" style="display: none;" accept=".stum" onchange="importProject(event)">
-                    <button class="project-btn" onclick="loadProjects()" title="Actualizează">
-                        <i class="fas fa-sync-alt"></i>
-                    </button>
-                </div>
-            </div>
-            <div class="project-grid" id="projectGridList">
-                <!-- Projects will be listed here -->
-            </div>
-        </div>
-        
-        <!-- System Info -->
-        <div class="system-info" id="systemInfo">
-            <div class="info-item">
-                <i class="fas fa-microchip"></i>
-                <span id="deviceInfo">Se încarcă...</span>
-            </div>
-            <div class="info-item">
-                <i class="fas fa-hdd"></i>
-                <span id="memoryInfo">Se încarcă...</span>
-            </div>
-            <div class="info-item">
-                <i class="fas fa-upload"></i>
-                <span id="uploadInfo">Max: 50GB • Chunk: 10MB</span>
-            </div>
-            <div class="info-item">
-                <i class="fas fa-clock"></i>
-                <span id="timeoutInfo">Timeout: 2 ore</span>
-            </div>
+        <!-- Hidden file input for import -->
+        <input type="file" id="importFile" style="display: none;" accept=".stum" onchange="importProject(event)">
+
+        <!-- Hidden elements -->
+        <div id="systemInfo" style="display: none;">
+            <span id="deviceInfo"></span>
+            <span id="memoryInfo"></span>
+            <span id="uploadInfo"></span>
+            <span id="timeoutInfo"></span>
         </div>
 
-        <!-- Upload and Main Controls (Moved Higher) -->
-        <div style="background: #fff; border-radius: 15px; padding: 20px; margin-bottom: 25px; border: 2px solid #667eea; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.1);">
-            <div class="upload-area" id="uploadArea">
-                <div class="upload-icon"><i class="fas fa-file-upload"></i></div>
-                <div class="upload-text" id="uploadText">Trage și plasează fișierul aici sau click pentru a selecta</div>
-                <div class="file-info" id="fileInfo">
-                    Upload Simplu: &lt;500MB • Upload Segmentat: până la 50GB
+        <!-- Main Upload Area -->
+        <div style="background: #fff; border-radius: 20px; padding: 30px; margin-bottom: 30px; border: 1px solid #e2e8f0; box-shadow: 0 10px 30px rgba(0,0,0,0.05);">
+            <div class="upload-area" id="uploadArea" style="height: 250px; display: flex; flex-direction: column; justify-content: center; align-items: center;">
+                <div class="upload-icon" style="font-size: 60px;"><i class="fas fa-cloud-upload-alt"></i></div>
+                <div class="upload-text" id="uploadText" style="font-size: 1.2rem; font-weight: 500;">Trage și plasează fișierul aici sau click pentru a selecta</div>
+                <div class="file-info" id="fileInfo" style="margin-top: 10px;">
+                    Suportă MP4, AVI, MOV, MKV, MP3, WAV până la 50GB
                 </div>
                 <input type="file" class="file-input" id="fileInput"
                        accept=".mp4,.avi,.mov,.mkv,.m4v,.mp3,.wav,.mpeg,.webm,.mxf,.wmv,.flv">
             </div>
 
-            <div class="button-group" style="margin-top: 20px;">
-                <button class="btn" id="processBtn" onclick="processFile()" disabled style="min-width: 200px;">
-                    <i class="fas fa-play"></i> Start Transcriere
-                </button>
-                <button class="btn btn-secondary" id="quickPreviewBtn" onclick="quickPreview()" disabled>
-                    <i class="fas fa-eye"></i> Previzualizare Rapidă
-                </button>
-                <button class="btn btn-danger" onclick="resetApp()">
-                    <i class="fas fa-redo"></i> Reset
+            <div style="text-align: center; margin-top: 25px;">
+                <button class="btn" id="processBtn" onclick="processFile()" disabled style="padding: 15px 50px; font-size: 1.1rem; border-radius: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                    <i class="fas fa-magic"></i> Start Transcriere
                 </button>
             </div>
         </div>
@@ -1644,64 +1869,16 @@
             </div>
         </div>
         
-        <!-- Settings Panel -->
-        <div class="settings-panel">
-            <!-- Model Selection -->
-            <div class="settings-card">
-                <h3><i class="fas fa-brain"></i> Selectare Model Whisper</h3>
-                <div class="model-grid" id="modelGrid">
-                    <!-- Models will be loaded here -->
-                </div>
-            </div>
-            
-            <!-- Language & Segmentation -->
-            <div class="settings-card">
-                <h3><i class="fas fa-language"></i> Setări Limbă și Segmentare</h3>
-                
-                <div class="language-selector">
-                    <label for="languageSelect"><i class="fas fa-globe"></i> Limbă:</label>
-                    <select id="languageSelect">
-                        <option value="auto">Detectare automată</option>
-                        <!-- Languages will be populated by JavaScript -->
-                    </select>
-                </div>
-                
-                <div class="checkbox-group">
-                    <input type="checkbox" id="adjustSegmentation" checked>
-                    <label for="adjustSegmentation">Ajustare automată segmentare pentru subtitrări</label>
-                </div>
-                
-                <div class="checkbox-group">
-                    <input type="checkbox" id="extractAudioOnlyCheckbox">
-                    <label for="extractAudioOnlyCheckbox">Doar extragere audio (fără transcriere)</label>
-                </div>
-
-                <div class="segmentation-controls" id="segmentationControls">
-                    <div class="control-group">
-                        <label>
-                            <span>Durata minimă segment (sec):</span>
-                            <span class="control-value" id="minDurationValue">1.0s</span>
-                        </label>
-                        <input type="range" id="minDuration" min="0.5" max="3.0" step="0.1" value="1.0">
-                    </div>
-                    
-                    <div class="control-group">
-                        <label>
-                            <span>Durata maximă segment (sec):</span>
-                            <span class="control-value" id="maxDurationValue">5.0s</span>
-                        </label>
-                        <input type="range" id="maxDuration" min="3.0" max="10.0" step="0.1" value="5.0">
-                    </div>
-                    
-                    <div class="control-group">
-                        <label>
-                            <span>Caractere maxime pe segment:</span>
-                            <span class="control-value" id="maxCharsValue">80</span>
-                        </label>
-                        <input type="range" id="maxChars" min="40" max="120" step="1" value="80">
-                    </div>
-                </div>
-            </div>
+        <!-- Simplified info display -->
+        <div style="display: none;">
+            <select id="languageSelect"></select>
+            <select id="translationSelect"></select>
+            <input type="checkbox" id="adjustSegmentation">
+            <input type="checkbox" id="extractAudioOnlyCheckbox">
+            <input type="range" id="minDuration">
+            <input type="range" id="maxDuration">
+            <input type="range" id="maxChars">
+            <div id="modelGrid"></div>
         </div>
         
         <!-- Status Bar -->
@@ -1760,29 +1937,6 @@
             <div id="previewContent"></div>
         </div>
         
-        <!-- Multiple Translations Panel -->
-        <div class="multiple-translations-panel" id="multipleTranslationsPanel">
-            <div class="multiple-translations-header">
-                <h3><i class="fas fa-globe-europe"></i> Traduceri Multiplă</h3>
-                <button class="translation-action" onclick="refreshTranslationsList()">
-                    <i class="fas fa-sync-alt"></i> Actualizează
-                </button>
-            </div>
-            
-            <div id="translationsListContainer">
-                <p>Se încarcă traducerile existente...</p>
-            </div>
-            
-            <div class="new-translation-controls">
-                <select id="newTranslationSelect">
-                    <option value="">-- Alege o limbă nouă --</option>
-                    <!-- Languages will be populated by JavaScript -->
-                </select>
-                <button class="btn" onclick="addNewTranslation()" id="addTranslationBtn">
-                    <i class="fas fa-plus"></i> Adaugă Traducere
-                </button>
-            </div>
-        </div>
         
         <!-- Progress Bar -->
         <div class="progress-container" id="progressContainer">
@@ -1833,7 +1987,16 @@
         
         <!-- Results -->
         <div class="result-container" id="resultContainer">
-            <h2 id="resultTitle"><i class="fas fa-check-circle"></i> Transcriere finalizată!</h2>
+            <div class="result-header">
+                <h2 id="resultTitle" style="margin: 0;"><i class="fas fa-check-circle"></i> Proiect</h2>
+
+                <div class="version-selector" id="versionSelectorContainer" style="display: none;">
+                    <label for="versionSelect"><i class="fas fa-history"></i> Versiune:</label>
+                    <select id="versionSelect" onchange="loadTranslation(this.value)">
+                        <option value="original">Original</option>
+                    </select>
+                </div>
+            </div>
 
             <div id="audioOnlyResult" style="display: none; text-align: center; margin: 20px 0;">
                 <div class="info-card" style="display: inline-block; margin-bottom: 20px;">
@@ -1847,18 +2010,6 @@
             </div>
 
             <div id="transcriptionResult">
-                <!-- Translation Toggle in Results -->
-            <div style="margin: 15px 0; display: flex; justify-content: center; gap: 10px;">
-                <button class="segment-translation-toggle" id="toggleSegmentsTranslation" onclick="toggleSegmentsTranslation()">
-                    <i class="fas fa-language"></i> Afișează Traducerea
-                </button>
-                <button class="segment-translation-toggle" onclick="showMultipleTranslations()" id="showMultipleTranslationsBtn">
-                    <i class="fas fa-globe-europe"></i> Traduceri Multiplă
-                </button>
-                <button class="segment-translation-toggle" onclick="downloadTranslatedSRT()" id="downloadTranslatedBtn" style="display: none;">
-                    <i class="fas fa-download"></i> Descarcă SRT Tradus
-                </button>
-            </div>
             
             <div class="full-text" id="fullText"></div>
             
@@ -1880,18 +2031,6 @@
                 </button>
             </div>
 
-            <!-- Project Management Actions -->
-            <div class="main-project-controls">
-                <button class="project-btn rename" onclick="renameCurrentProject()">
-                    <i class="fas fa-edit"></i> Redenumește Proiectul
-                </button>
-                <button class="project-btn export" onclick="exportCurrentProject()">
-                    <i class="fas fa-file-export"></i> Descarcă .stum (Proiect Complet)
-                </button>
-                <button class="project-btn" onclick="loadProjects(); document.getElementById('projectLibrary').scrollIntoView({behavior: 'smooth'})">
-                    <i class="fas fa-folder-open"></i> Înapoi la Bibliotecă
-                </button>
-            </div>
         </div>
     </div>
     
@@ -1926,7 +2065,7 @@
         let translationEnabled = false;
         let showTranslatedSegments = false;
         let translationCapabilities = [];
-        let multipleTranslations = {};
+        // Cache pentru traduceri (opțional, acum folosim API-ul direct)
         let currentTranslationLang = null;
         
         // Variabile pentru upload segmentat (acum singura metodă)
@@ -1940,6 +2079,59 @@
         let maxSimpleSize = 500 * 1024 * 1024; // 500MB
         let maxChunkedSize = 50 * 1024 * 1024 * 1024; // 50GB
         
+        // Elemente Sidebar și Menu
+        const sidebar = document.getElementById('sidebar');
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+        const projectsModal = document.getElementById('projectsModal');
+        const transcribeSubmenu = document.getElementById('transcribeSubmenu');
+        const translateSubmenu = document.getElementById('translateSubmenu');
+        const modelSubmenu = document.getElementById('modelSubmenu');
+
+        // Logică Sidebar
+        function openSidebar() {
+            sidebar.classList.add('active');
+            sidebarToggle.classList.add('active');
+            sidebarOverlay.style.display = 'block';
+        }
+
+        function closeSidebar() {
+            sidebar.classList.remove('active');
+            sidebarToggle.classList.remove('active');
+            sidebarOverlay.style.display = 'none';
+        }
+
+        sidebarToggle.addEventListener('click', () => {
+            if (sidebar.classList.contains('active')) closeSidebar();
+            else openSidebar();
+        });
+
+        sidebarOverlay.addEventListener('click', closeSidebar);
+
+        // Submenus logic
+        document.querySelectorAll('.menu-item.has-submenu').forEach(item => {
+            item.addEventListener('click', () => {
+                item.classList.toggle('open');
+            });
+        });
+
+        // Modal Projects logic
+        function showProjectsModal() {
+            closeSidebar();
+            projectsModal.style.display = 'flex';
+            loadProjects(); // Actualizează lista
+        }
+
+        function closeProjectsModal() {
+            projectsModal.style.display = 'none';
+        }
+
+        window.onclick = function(event) {
+            if (event.target == projectsModal) {
+                closeProjectsModal();
+            }
+        }
+
         // Elemente DOM
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
@@ -2005,7 +2197,6 @@
         const toggleSegmentsTranslationBtn = document.getElementById('toggleSegmentsTranslation');
         const downloadTranslatedBtn = document.getElementById('downloadTranslatedBtn');
         const mainDownloadTranslatedBtn = document.getElementById('mainDownloadTranslatedBtn');
-        const multipleTranslationsPanel = document.getElementById('multipleTranslationsPanel');
         const translationsListContainer = document.getElementById('translationsListContainer');
         const newTranslationSelect = document.getElementById('newTranslationSelect');
         const addTranslationBtn = document.getElementById('addTranslationBtn');
@@ -2205,7 +2396,6 @@
             console.log('Original segments:', originalSegments ? originalSegments.length : 0);
             console.log('Current segments:', currentSegments ? currentSegments.length : 0);
             console.log('Translated segments:', translatedSegments ? translatedSegments.length : 0);
-            console.log('Multiple translations:', Object.keys(multipleTranslations));
             console.log('Detected language:', infoLanguage.textContent);
             console.log('Process ID:', processId);
             console.log('Chunked upload session:', chunkedUploadSession);
@@ -2222,8 +2412,11 @@
                 if (data.error) throw new Error(data.error);
                 
                 modelGrid.innerHTML = '';
+                modelSubmenu.innerHTML = '';
                 data.models.forEach(model => {
                     const isSelected = model.id === currentModel;
+
+                    // Update main grid (if still visible)
                     const modelElement = document.createElement('div');
                     modelElement.className = `model-option ${isSelected ? 'selected' : ''}`;
                     modelElement.innerHTML = `
@@ -2233,9 +2426,15 @@
                         <div class="model-status ${modelsStatus[model.id]?.loaded ? 'loaded' : ''}" 
                              id="status-${model.id}"></div>
                     `;
-                    
                     modelElement.onclick = () => selectModel(model.id);
                     modelGrid.appendChild(modelElement);
+
+                    // Update sidebar submenu
+                    const subItem = document.createElement('div');
+                    subItem.className = 'submenu-item';
+                    subItem.innerHTML = `<i class="fas fa-microchip"></i> ${model.name} ${isSelected ? '✓' : ''}`;
+                    subItem.onclick = () => { selectModel(model.id); closeSidebar(); };
+                    modelSubmenu.appendChild(subItem);
                 });
             } catch (error) {
                 console.error('Eroare la încărcarea modelelor:', error);
@@ -2252,6 +2451,8 @@
                 if (data.error) throw new Error(data.error);
                 
                 languageSelect.innerHTML = '<option value="auto">Detectare automată</option>';
+                transcribeSubmenu.innerHTML = '<div class="submenu-item" onclick="setLanguage(\'auto\'); closeSidebar()">Auto-detectare</div>';
+
                 data.languages.forEach(lang => {
                     if (lang.code !== 'auto') {
                         const option = document.createElement('option');
@@ -2259,6 +2460,13 @@
                         option.textContent = `${lang.name} (${lang.code})`;
                         option.selected = lang.selected;
                         languageSelect.appendChild(option);
+
+                        // Sidebar
+                        const subItem = document.createElement('div');
+                        subItem.className = 'submenu-item';
+                        subItem.textContent = lang.name;
+                        subItem.onclick = () => { setLanguage(lang.code); closeSidebar(); };
+                        transcribeSubmenu.appendChild(subItem);
                     }
                 });
             } catch (error) {
@@ -2275,12 +2483,25 @@
                 if (data.error) throw new Error(data.error);
                 
                 translationSelect.innerHTML = '<option value="">-- Selectează limba țintă --</option>';
+                translateSubmenu.innerHTML = '<div class="submenu-item" onclick="toggleTranslation(); closeSidebar()"><i class="fas fa-power-off"></i> Dezactivată / Activată</div>';
+
                 data.translation_languages.forEach(lang => {
                     const option = document.createElement('option');
                     option.value = lang.code;
                     option.textContent = `${lang.name} (${lang.code})`;
                     option.selected = lang.selected;
                     translationSelect.appendChild(option);
+
+                    // Sidebar
+                    const subItem = document.createElement('div');
+                    subItem.className = 'submenu-item';
+                    subItem.textContent = lang.name;
+                    subItem.onclick = async () => {
+                        await setTranslationTarget(lang.code);
+                        if (processId) await addNewTranslation(lang.code);
+                        closeSidebar();
+                    };
+                    translateSubmenu.appendChild(subItem);
                 });
                 
                 if (data.current_target) {
@@ -2365,6 +2586,9 @@
                 
                 deviceInfo.textContent = `CPU: ${data.cpu_count} cores`;
                 memoryInfo.textContent = `Memorie: ${data.available_memory}`;
+
+                document.getElementById('sidebarDeviceInfo').innerHTML = `<i class="fas fa-microchip"></i> CPU: ${data.cpu_count} cores (${data.cuda_available ? 'CUDA ✅' : 'CPU ⚠️'})`;
+                document.getElementById('sidebarMemoryInfo').innerHTML = `<i class="fas fa-hdd"></i> Mem: ${data.available_memory}`;
                 uploadInfo.textContent = `Max: ${data.max_file_size} • Chunk: ${data.chunk_size}`;
                 timeoutInfo.textContent = `Timeout: ${data.process_timeout}`;
                 
@@ -2375,6 +2599,12 @@
         
         // Selectează modelul
         async function selectModel(modelId) {
+            // Actualizează sidebar
+            const modelMenu = document.getElementById('modelMenu');
+            if (modelMenu) {
+                modelMenu.innerHTML = `<i class="fas fa-brain"></i> Model: ${modelId.toUpperCase()}`;
+            }
+
             try {
                 const response = await fetch('/set_model', {
                     method: 'POST',
@@ -2401,8 +2631,15 @@
         }
         
         // Actualizează limba
-        async function updateLanguage() {
-            const language = languageSelect.value;
+        async function setLanguage(language) {
+            if (languageSelect) languageSelect.value = language;
+
+            // Actualizează sidebar
+            const transcribeMenu = document.getElementById('transcribeMenu');
+            if (transcribeMenu) {
+                transcribeMenu.innerHTML = `<i class="fas fa-microphone-alt"></i> Limbă Sursă: ${language.toUpperCase()}`;
+            }
+
             try {
                 const response = await fetch('/set_language', {
                     method: 'POST',
@@ -2427,8 +2664,18 @@
         }
         
         // Actualizează limba țintă pentru traducere
-        async function updateTranslationTarget() {
-            const targetLanguage = translationSelect.value;
+        async function setTranslationTarget(targetLanguage) {
+            if (translationSelect) translationSelect.value = targetLanguage;
+
+            // Actualizează sidebar
+            const translateMenu = document.getElementById('translateMenu');
+            if (translateMenu) {
+                if (targetLanguage) {
+                    translateMenu.innerHTML = `<i class="fas fa-language"></i> Traducere: ${targetLanguage.toUpperCase()}`;
+                } else {
+                    translateMenu.innerHTML = `<i class="fas fa-language"></i> Traducere: OFF`;
+                }
+            }
             
             if (!targetLanguage) {
                 translationEnabled = false;
@@ -2516,11 +2763,23 @@
         // Actualizează badge-ul de traducere
         function updateTranslationBadge() {
             if (translationEnabled && translationTarget) {
-                translationBadge.style.display = 'inline-block';
-                translationBadge.innerHTML = `<i class="fas fa-language"></i> → ${translationTarget.toUpperCase()}`;
-                translationBadge.title = `Traducere activă în ${translationTarget}`;
+                if (translationBadge) {
+                    translationBadge.style.display = 'inline-block';
+                    translationBadge.innerHTML = `<i class="fas fa-language"></i> → ${translationTarget.toUpperCase()}`;
+                    translationBadge.title = `Traducere activă în ${translationTarget}`;
+                }
+
+                // Update sidebar menu item
+                const translateMenu = document.getElementById('translateMenu');
+                if (translateMenu) {
+                    translateMenu.innerHTML = `<i class="fas fa-language"></i> Traducere (${translationTarget.toUpperCase()})`;
+                }
             } else {
-                translationBadge.style.display = 'none';
+                if (translationBadge) translationBadge.style.display = 'none';
+                const translateMenu = document.getElementById('translateMenu');
+                if (translateMenu) {
+                    translateMenu.innerHTML = `<i class="fas fa-language"></i> Traducere (OFF)`;
+                }
             }
         }
         
@@ -2555,11 +2814,44 @@
             }
         }
         
+        // Sincronizează setările între Sidebar și logică
+        function syncSettings(type, value) {
+            switch(type) {
+                case 'adjust':
+                    adjustSegmentationCheckbox.checked = value;
+                    toggleSegmentationControls();
+                    break;
+                case 'audio':
+                    extractAudioOnlyCheckbox.checked = value;
+                    break;
+                case 'min':
+                    minDurationSlider.value = value;
+                    document.getElementById('sidebarMinDurVal').textContent = value + 's';
+                    updateSegmentationSettings();
+                    break;
+                case 'max':
+                    maxDurationSlider.value = value;
+                    document.getElementById('sidebarMaxDurVal').textContent = value + 's';
+                    updateSegmentationSettings();
+                    break;
+                case 'chars':
+                    maxCharsSlider.value = value;
+                    document.getElementById('sidebarMaxCharsVal').textContent = value;
+                    updateSegmentationSettings();
+                    break;
+            }
+        }
+
         // Actualizează valorile slider-elor
         function updateSliderValues() {
-            minDurationValue.textContent = `${minDurationSlider.value}s`;
-            maxDurationValue.textContent = `${maxDurationSlider.value}s`;
-            maxCharsValue.textContent = maxCharsSlider.value;
+            if (minDurationValue) minDurationValue.textContent = `${minDurationSlider.value}s`;
+            if (maxDurationValue) maxDurationValue.textContent = `${maxDurationSlider.value}s`;
+            if (maxCharsValue) maxCharsValue.textContent = maxCharsSlider.value;
+
+            // Sync to sidebar display
+            document.getElementById('sidebarMinDurVal').textContent = `${minDurationSlider.value}s`;
+            document.getElementById('sidebarMaxDurVal').textContent = `${maxDurationSlider.value}s`;
+            document.getElementById('sidebarMaxCharsVal').textContent = maxCharsSlider.value;
         }
         
         // Activează/dezactivează controalele de segmentare
@@ -2672,7 +2964,6 @@
             processingInfo.style.display = 'none';
             segmentsPreview.style.display = 'none';
             videoPreviewContainer.style.display = 'none';
-            multipleTranslationsPanel.style.display = 'none';
             hideError();
             hideScrollButton();
             
@@ -3231,22 +3522,11 @@
             // Actualizează lista de traduceri multiple
             const usedLang = data.translation_used || data.translation_target;
             if (data.is_translated && usedLang) {
-                multipleTranslations[usedLang] = currentSegments;
                 currentTranslationLang = usedLang;
-
-                // Păstrăm și numele fișierului SRT dacă există
-                if (data.filename) {
-                    if (!multipleTranslations[usedLang].srt_filename) {
-                        multipleTranslations[usedLang].srt_filename = data.filename;
-                    }
-                }
             }
             // Reîmprospătează lista din interfață
             refreshTranslationsList();
             loadProjects(); // Actualizează biblioteca de proiecte
-
-            // Afișează panoul de traduceri multiple
-            document.getElementById('multipleTranslationsPanel').style.display = 'block';
             
             // Afișează textul complet
             document.getElementById('fullText').textContent = data.full_text;
@@ -3453,118 +3733,71 @@
         }
         
         // Arată panoul pentru traduceri multiple
-        function showMultipleTranslations() {
-            multipleTranslationsPanel.style.display = 'block';
-            refreshTranslationsList();
-            window.scrollTo({ 
-                top: multipleTranslationsPanel.offsetTop - 20, 
-                behavior: 'smooth' 
-            });
-        }
         
-        // Încarcă lista de traduceri existente
+        // Încarcă lista de traduceri existente în dropdown
         async function refreshTranslationsList() {
             try {
                 const response = await fetch('/get_existing_translations');
                 const data = await response.json();
                 
+                const versionSelect = document.getElementById('versionSelect');
+                const versionSelectorContainer = document.getElementById('versionSelectorContainer');
+
                 if (data.success) {
-                    let html = '';
+                    // Reset dropdown
+                    versionSelect.innerHTML = `<option value="original">Original (${data.detected_language})</option>`;
                     
                     if (data.total_translations > 0) {
-                        html += `<p><strong>Traduceri existente (${data.total_translations}):</strong></p>`;
-                        html += '<div class="translations-list">';
-                        
-                        // Adaugă originalul
-                        html += `
-                            <div class="translation-item ${!currentTranslationLang ? 'active' : ''}" 
-                                 onclick="loadTranslation(null)">
-                                <span class="translation-lang">${data.detected_language}</span>
-                                <span>(original)</span>
-                                <span style="margin-left: auto; color: #718096;">${data.original_segments_count} segmente</span>
-                            </div>
-                        `;
-                        
-                        // Adaugă traducerile
+                        versionSelectorContainer.style.display = 'flex';
                         data.translations.forEach(trans => {
-                            // Stocăm și numele fișierului SRT
-                            if (trans.srt_filename) {
-                                if (!multipleTranslations[trans.target_language]) {
-                                    multipleTranslations[trans.target_language] = { srt_filename: trans.srt_filename };
-                                } else {
-                                    multipleTranslations[trans.target_language].srt_filename = trans.srt_filename;
-                                }
-                            }
-
-                            html += `
-                                <div class="translation-item ${currentTranslationLang === trans.target_language ? 'active' : ''}" 
-                                     onclick="loadTranslation('${trans.target_language}')">
-                                    <span class="translation-lang">${trans.target_language}</span>
-                                    <span>(${trans.target_name})</span>
-                                    <button class="translation-action" onclick="downloadTranslationSRT('${trans.target_language}', event)">
-                                        <i class="fas fa-download"></i>
-                                    </button>
-                                    <span style="margin-left: auto; color: #718096;">${trans.segment_count} segmente</span>
-                                </div>
-                            `;
+                            const option = document.createElement('option');
+                            option.value = trans.target_language;
+                            option.textContent = `${trans.target_name} (${trans.target_language})`;
+                            if (currentTranslationLang === trans.target_language) option.selected = true;
+                            versionSelect.appendChild(option);
                         });
-                        
-                        html += '</div>';
                     } else {
-                        html = '<p>Nu există traduceri salvate încă. Adaugă o traducere nouă mai jos.</p>';
+                        versionSelectorContainer.style.display = 'none';
                     }
-                    
-                    translationsListContainer.innerHTML = html;
                 }
             } catch (error) {
                 console.error('Eroare la încărcarea listei de traduceri:', error);
-                translationsListContainer.innerHTML = '<p>Eroare la încărcarea traducerilor.</p>';
             }
         }
         
         // Încarcă o traducere specifică
         async function loadTranslation(langCode) {
-            if (langCode === null) {
+            if (langCode === 'original' || langCode === null) {
                 currentSegments = originalSegments;
                 currentTranslationLang = null;
                 displaySegments(originalSegments);
                 showToast('Se afișează segmentele originale', 'info');
 
-                downloadTranslatedBtn.style.display = 'none';
-                mainDownloadTranslatedBtn.style.display = 'none';
+                if (downloadTranslatedBtn) downloadTranslatedBtn.style.display = 'none';
+                if (mainDownloadTranslatedBtn) mainDownloadTranslatedBtn.style.display = 'none';
 
-                // Actualizează UI lista (pentru clasa active)
                 refreshTranslationsList();
             } else {
                 try {
-                    // Dacă nu avem segmentele în memorie (doar meta-datele de la refresh)
-                    if (!multipleTranslations[langCode] || !Array.isArray(multipleTranslations[langCode])) {
-                        showToast(`Se încarcă traducerea în ${langCode}...`, 'info');
+                    showToast(`Se încarcă traducerea în ${langCode}...`, 'info');
 
-                        const filename = `translated_segments_${langCode}.json`;
-                        const response = await fetch(`/segments_json/${processId}/${filename}`);
-                        const data = await response.json();
+                    const filename = `translated_segments_${langCode}.json`;
+                    const response = await fetch(`/segments_json/${processId}/${filename}`);
+                    const data = await response.json();
 
-                        if (data.segments) {
-                            const srt_filename = multipleTranslations[langCode]?.srt_filename;
-                            multipleTranslations[langCode] = data.segments;
-                            if (srt_filename) multipleTranslations[langCode].srt_filename = srt_filename;
-                        } else {
-                            throw new Error('Nu s-au putut încărca segmentele');
-                        }
+                    if (data.segments) {
+                        currentSegments = data.segments;
+                        currentTranslationLang = langCode;
+                        displaySegments(currentSegments);
+
+                        if (downloadTranslatedBtn) downloadTranslatedBtn.style.display = 'inline-flex';
+                        if (mainDownloadTranslatedBtn) mainDownloadTranslatedBtn.style.display = 'inline-flex';
+
+                        showToast(`Se afișează traducerea în ${langCode}`, 'info');
+                        refreshTranslationsList();
+                    } else {
+                        throw new Error('Nu s-au putut încărca segmentele');
                     }
-
-                    currentSegments = multipleTranslations[langCode];
-                    currentTranslationLang = langCode;
-
-                    if (multipleTranslations[langCode].srt_filename) {
-                        translatedSrtFilename = multipleTranslations[langCode].srt_filename;
-                        downloadTranslatedBtn.style.display = 'inline-flex';
-                        mainDownloadTranslatedBtn.style.display = 'inline-flex';
-                    }
-
-                    displaySegments(currentSegments);
-                    showToast(`Se afișează traducerea în ${langCode}`, 'info');
                 } catch (error) {
                     console.error('Eroare la încărcarea traducerii:', error);
                     showToast('Eroare la încărcarea traducerii de pe server', 'error');
@@ -3574,37 +3807,17 @@
             refreshTranslationsList();
         }
         
-        // Adaugă o nouă traducere
-        async function addNewTranslation() {
-            const targetLang = newTranslationSelect.value;
-            
-            if (!targetLang) {
-                showToast('Selectează o limbă pentru traducere', 'error');
+        // Adaugă o nouă traducere (apelată din Sidebar)
+        async function addNewTranslation(targetLang) {
+            if (!processId) {
+                showToast('Niciun proiect activ. Încarcă un fișier mai întâi.', 'error');
                 return;
             }
-            
-            if (!originalSegments || originalSegments.length === 0) {
-                showToast('Nu există segmente pentru traducere. Încarcă un fișier mai întâi.', 'error');
-                return;
-            }
-            
-            const detectedLang = infoLanguage.textContent.trim();
-            const langCode = detectedLang.split(' ')[0];
-            
-            console.log('Încerc să traduc din', langCode, 'în', targetLang);
-            
-            if (multipleTranslations[targetLang]) {
-                showToast(`Traducerea în ${targetLang} există deja`, 'info');
-                loadTranslation(targetLang);
-                return;
-            }
+
+            if (!targetLang) return;
             
             try {
-                showToast(`Se traduce în ${targetLang}...`, 'info');
-                
-                const originalBtnText = addTranslationBtn.innerHTML;
-                addTranslationBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Se traduce...';
-                addTranslationBtn.disabled = true;
+                showToast(`Se inițiază traducerea în ${targetLang}...`, 'info');
                 
                 const response = await fetch('/translate_existing', {
                     method: 'POST',
@@ -3612,33 +3825,22 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        target_lang: targetLang,
-                        source_lang: langCode
+                        target_lang: targetLang
                     })
                 });
                 
                 const data = await response.json();
                 
                 if (data.success) {
-                    showToast('Traducerea a început în background...', 'info');
+                    showToast('Traducerea a început în background...', 'success');
                     progressContainer.style.display = 'block';
                     loading.style.display = 'block';
                     pollTaskStatus(data.process_id);
-                    
-                    setTimeout(() => {
-                        addTranslationBtn.innerHTML = originalBtnText;
-                        addTranslationBtn.disabled = false;
-                    }, 1000);
                 } else {
-                    addTranslationBtn.innerHTML = originalBtnText;
-                    addTranslationBtn.disabled = false;
                     throw new Error(data.error || 'Eroare la traducere');
                 }
             } catch (error) {
-                addTranslationBtn.innerHTML = '<i class="fas fa-plus"></i> Adaugă Traducere';
-                addTranslationBtn.disabled = false;
-                
-                console.error('Eroare detaliată la traducere:', error);
+                console.error('Eroare la traducere:', error);
                 showToast(`Eroare la traducere: ${error.message}`, 'error');
             }
         }
@@ -3646,13 +3848,9 @@
         // Descarcă un fișier SRT pentru o traducere specifică
         function downloadTranslationSRT(langCode, event = null) {
             if (event) event.stopPropagation();
-            
-            if (!multipleTranslations[langCode]) {
-                showToast(`Traducerea în ${langCode} nu există`, 'error');
-                return;
-            }
-            
-            showToast(`Descărcarea pentru ${langCode} va fi implementată în curând.`, 'info');
+            if (!langCode) langCode = currentTranslationLang;
+            if (!langCode || !processId) return;
+            window.location.href = `/download_translated/${processId}/${langCode}`;
         }
         
 
@@ -3896,7 +4094,6 @@
             videoPlayInterval = null;
             currentSegmentIndex = -1;
             showTranslatedSegments = false;
-            multipleTranslations = {};
             currentTranslationLang = null;
             
             // Reset upload segmentat
@@ -3913,7 +4110,6 @@
             processingInfo.style.display = 'none';
             segmentsPreview.style.display = 'none';
             videoPreviewContainer.style.display = 'none';
-            multipleTranslationsPanel.style.display = 'none';
             loading.style.display = 'none';
             progressContainer.style.display = 'none';
             translationProgress.style.display = 'none';
@@ -4005,12 +4201,22 @@
             try {
                 const response = await fetch('/projects');
                 const projects = await response.json();
+
+                // Update Project Library (if visible)
                 const projectGridList = document.getElementById('projectGridList');
                 const projectLibrary = document.getElementById('projectLibrary');
 
+                // Update Modal
+                const projectGridListModal = document.getElementById('projectGridListModal');
+
                 if (projects.length > 0) {
-                    projectLibrary.style.display = 'block';
-                    projectGridList.innerHTML = '';
+                    if (projectLibrary) {
+                        projectLibrary.style.display = 'block';
+                        projectGridList.innerHTML = '';
+                    }
+                    if (projectGridListModal) {
+                        projectGridListModal.innerHTML = '';
+                    }
 
                     projects.forEach(p => {
                         const card = document.createElement('div');
@@ -4023,7 +4229,7 @@
 
                         const durationStr = p.duration ? formatDuration(p.duration) : 'N/A';
 
-                        card.innerHTML = `
+                        const cardContent = `
                             <h4 title="${p.project_name}">${p.project_name}</h4>
                             <div class="meta">
                                 <span><i class="far fa-calendar-alt"></i> ${p.created_at}</span>
@@ -4042,10 +4248,30 @@
                                 </button>
                             </div>
                         `;
-                        projectGridList.appendChild(card);
+
+                        if (projectGridList) {
+                            const card = document.createElement('div');
+                            card.className = `project-card ${processId === p.process_id ? 'active' : ''}`;
+                            card.onclick = (e) => { if (!e.target.closest('.project-btn')) loadProject(p.process_id); };
+                            card.innerHTML = cardContent;
+                            projectGridList.appendChild(card);
+                        }
+
+                        if (projectGridListModal) {
+                            const cardModal = document.createElement('div');
+                            cardModal.className = `project-card ${processId === p.process_id ? 'active' : ''}`;
+                            cardModal.onclick = (e) => {
+                                if (!e.target.closest('.project-btn')) {
+                                    loadProject(p.process_id);
+                                    closeProjectsModal();
+                                }
+                            };
+                            cardModal.innerHTML = cardContent;
+                            projectGridListModal.appendChild(cardModal);
+                        }
                     });
                 } else {
-                    projectLibrary.style.display = 'none';
+                    if (projectLibrary) projectLibrary.style.display = 'none';
                 }
             } catch (error) {
                 console.error('Eroare la încărcarea proiectelor:', error);
@@ -4091,7 +4317,6 @@
 
                     // Reîmprospătăm lista de traduceri
                     refreshTranslationsList();
-                    document.getElementById('multipleTranslationsPanel').style.display = 'block';
 
                     // Scroll la rezultate
                     resultContainer.scrollIntoView({behavior: 'smooth'});
@@ -4121,7 +4346,8 @@
                 if (data.success) {
                     showToast('Proiect redenumit', 'success');
                     if (processId === pid) {
-                        document.getElementById('resultTitle').innerHTML = `<i class="fas fa-folder-open"></i> Proiect: ${newName}`;
+                        const resultTitle = document.getElementById('resultTitle');
+                        if (resultTitle) resultTitle.innerHTML = `<i class="fas fa-folder-open"></i> Proiect: ${newName}`;
                     }
                     loadProjects();
                 }
@@ -4131,9 +4357,13 @@
         }
 
         function renameCurrentProject() {
-            if (!processId) return;
-            const currentTitle = document.getElementById('resultTitle').textContent.replace(' Proiect: ', '').trim();
-            renameProject(processId, currentTitle);
+            if (processId) {
+                const resultTitle = document.getElementById('resultTitle');
+                const currentTitle = resultTitle ? resultTitle.textContent.replace(' Proiect: ', '').trim() : 'proiect';
+                renameProject(processId, currentTitle);
+            } else {
+                showToast('Niciun proiect deschis', 'warning');
+            }
         }
 
         function exportProject(pid) {
@@ -4142,10 +4372,23 @@
 
         function exportCurrentProject() {
             if (processId) exportProject(processId);
+            else showToast('Niciun proiect deschis', 'warning');
         }
 
-        async function deleteProject(pid) {
-            if (!confirm('Ești sigur că vrei să ștergi acest proiect? Această acțiune este ireversibilă.')) return;
+        function deleteCurrentProject() {
+            if (processId) {
+                const resultTitle = document.getElementById('resultTitle');
+                const currentTitle = resultTitle ? resultTitle.textContent.replace(' Proiect: ', '').trim() : 'acest proiect';
+                if (confirm(`Ești sigur că vrei să ștergi proiectul "${currentTitle}"? Această acțiune este ireversibilă.`)) {
+                    deleteProject(processId, true);
+                }
+            } else {
+                showToast('Niciun proiect deschis', 'warning');
+            }
+        }
+
+        async function deleteProject(pid, skipConfirm = false) {
+            if (!skipConfirm && !confirm('Ești sigur că vrei să ștergi acest proiect? Această acțiune este ireversibilă.')) return;
 
             try {
                 const response = await fetch(`/delete_project/${pid}`, { method: 'DELETE' });

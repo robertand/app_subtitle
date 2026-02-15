@@ -246,3 +246,5 @@ Folosind device: cpu
  * Restarting with stat
  * Debugger is active!
  * Debugger PIN: 410-907-091
+127.0.0.1 - - [15/Feb/2026 12:47:05] "HEAD / HTTP/1.1" 200 -
+127.0.0.1 - - [15/Feb/2026 12:48:20] "GET / HTTP/1.1" 200 -
