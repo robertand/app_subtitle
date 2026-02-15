@@ -1,6 +1,8 @@
 import os
 import tempfile
 import whisper
+import zipfile
+import io
 from flask import Flask, render_template, request, jsonify, send_file, session
 from werkzeug.utils import secure_filename
 import json
@@ -51,7 +53,7 @@ upload_lock = threading.Lock()
 processing_tasks = {}
 
 # Lock pentru procesare GPU (pentru a evita supraîncărcarea memoriei video)
-gpu_processing_lock = threading.Lock()
+gpu_processing_lock = threading.RLock()
 tasks_lock = threading.Lock()
 
 # Cache pentru suport hardware
@@ -491,7 +493,7 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, pr
         print(f"✗ Eroare la traducere: {str(e)}")
         return segments
 
-def translate_multilingual_segments(segments, target_lang, process_id=None, overall_language='en'):
+def translate_multilingual_segments(segments, target_lang, process_id=None):
     """
     Traduce segmente care pot fi în mai multe limbi sursă.
     Detectează automat limba fiecărui segment și folosește modelul potrivit.
@@ -507,11 +509,7 @@ def translate_multilingual_segments(segments, target_lang, process_id=None, over
 
     # Grupăm segmentele după limba sursă
     for seg in segments:
-        # Folosește detected_language dacă este disponibil
-        source_lang = seg.get('detected_language') or seg.get('language')
-        if not source_lang or source_lang == 'unknown' or source_lang == 'auto':
-            source_lang = overall_language or 'en'
-
+        source_lang = seg.get('language', 'en')  # Default engleză
         if source_lang not in language_groups:
             language_groups[source_lang] = []
         language_groups[source_lang].append(seg)
@@ -543,22 +541,15 @@ def translate_multilingual_segments(segments, target_lang, process_id=None, over
                 })
 
             try:
-                # Utilizăm lock-ul GPU pentru traducere
-                with gpu_processing_lock:
-                    translated = translate_segments(whisper_segments, source_lang, target_lang, process_id=process_id)
+                translated = translate_segments(whisper_segments, source_lang, target_lang)
 
-                # Verificăm dacă am primit același număr de segmente
-                if translated and len(translated) == len(group_segments):
-                    for i, seg in enumerate(translated):
-                        translated_seg = group_segments[i].copy()
-                        translated_seg['text'] = seg['text']
-                        translated_seg['original'] = False
-                        translated_seg['target_language'] = target_lang
-                        translated_seg['source_language'] = source_lang
-                        translated_segments.append(translated_seg)
-                else:
-                    print(f"  ⚠️ Mismatch în numărul de segmente traduse pentru {source_lang} ({len(translated) if translated else 0} vs {len(group_segments)})")
-                    raise ValueError("Mismatch segmente")
+                for i, seg in enumerate(translated):
+                    translated_seg = group_segments[i].copy()
+                    translated_seg['text'] = seg['text']
+                    translated_seg['original'] = False
+                    translated_seg['target_language'] = target_lang
+                    translated_seg['source_language'] = source_lang
+                    translated_segments.append(translated_seg)
 
             except Exception as e:
                 print(f"  ❌ Eroare la traducere din {source_lang}: {str(e)}")
@@ -1610,11 +1601,11 @@ def process_large_file(file_path, model_name, language, translation_target,
 
             print(f"Durata totală: {duration:.1f}s, Chunks: {total_chunks}")
 
+            # Procesează fiecare chunk din fișierul audio extras
             all_segments = []
             detected_language = language
             language_per_chunk = []  # Stocăm limba pentru fiecare chunk
 
-            # Procesează fiecare chunk din fișierul audio extras
             for chunk_idx in range(total_chunks):
                 # Verifică dacă task-ul a fost anulat
                 task = get_task_status(process_id)
@@ -1640,8 +1631,8 @@ def process_large_file(file_path, model_name, language, translation_target,
 
                 cmd = [
                     'ffmpeg',
-                    '-ss', str(start_chunk),    # Seeking înainte de -i (input seeking) pentru acuratețe maximă
                     '-i', full_audio_path,
+                    '-ss', str(start_chunk),
                     '-t', str(length_chunk),
                     '-acodec', 'pcm_s16le',
                     '-y',
@@ -1657,20 +1648,13 @@ def process_large_file(file_path, model_name, language, translation_target,
                         # Verifică durata chunk-ului
                         chunk_dur = get_video_duration(audio_chunk_path)
                         if chunk_dur and chunk_dur > 0.1:
-                            # Configurare transcriere pentru a preveni driftul și halucinațiile
+                            # 🔴 MODIFICARE IMPORTANTĂ: NU mai setăm limba la nivel global
+                            # Lăsăm Whisper să detecteze limba pentru FIECARE chunk
                             transcribe_kwargs = {
                                 'task': 'transcribe',
-                                'fp16': (device == "cuda"),
-                                'condition_on_previous_text': False, # FOARTE IMPORTANT: Previne transpunerea limbii dintr-un segment în altul
-                                'no_speech_threshold': 0.5,           # Mai strict cu liniștea pentru a evita halucinațiile
-                                'logprob_threshold': -1.0,            # Evită segmentele cu încredere foarte mică
-                                'word_timestamps': True               # Precizie maximă pentru sincronizare
+                                'fp16': (device == "cuda")
                             }
-
-                            # Dacă utilizatorul a ales o limbă specifică, o folosim. Altfel lăsăm auto-detect per chunk.
-                            if language and language != 'auto':
-                                transcribe_kwargs['language'] = language
-                                print(f"  -> Folosesc limba setată: {language}")
+                            # NU setăm language aici - lăsăm detectarea automată pentru fiecare chunk
 
                             chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
 
@@ -1696,25 +1680,17 @@ def process_large_file(file_path, model_name, language, translation_target,
                         os.remove(audio_chunk_path)
                     continue
 
+                # Nu mai setăm detected_language global - fiecare chunk are propria limbă
+
                 chunk_segments = chunk_result.get('segments', [])
 
                 if not chunk_segments:
                     continue
 
-                # Ajustează timpii segmentelor și previne suprapunerea între chunk-uri
-                chunk_end_time = start_chunk + length_chunk
+                # Ajustează timpii segmentelor
                 for seg in chunk_segments:
-                    actual_start = seg['start'] + start_chunk
-                    actual_end = seg['end'] + start_chunk
-
-                    # Ignorăm segmentele care încep după sfârșitul teoretic al acestui chunk
-                    if actual_start >= chunk_end_time:
-                        continue
-
-                    # Ajustăm timpii și limităm sfârșitul la granița chunk-ului
-                    seg['start'] = actual_start
-                    seg['end'] = min(actual_end, chunk_end_time)
-
+                    seg['start'] += start_chunk
+                    seg['end'] += start_chunk
                     # Adăugăm informația despre limba chunk-ului în fiecare segment
                     seg['detected_language'] = chunk_result.get('language', 'unknown')
                     all_segments.append(seg)
@@ -1722,34 +1698,26 @@ def process_large_file(file_path, model_name, language, translation_target,
                 # Curăță chunk-ul audio
                 os.remove(audio_chunk_path)
 
+            # La final, salvăm informațiile despre limbile detectate
+            language_report_path = os.path.join(process_dir, 'language_report.json')
+            with open(language_report_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'chunks': language_per_chunk,
+                    'total_chunks': total_chunks,
+                    'languages_detected': list(set([item['language'] for item in language_per_chunk]))
+                }, f, ensure_ascii=False, indent=2)
+
             # Procesează segmentele combinate
             segments = sorted(all_segments, key=lambda x: x['start'])
 
             if should_adjust_segmentation:
                 segments = adjust_segmentation_algorithm(segments)
 
-            # Asigurăm o curățenie finală a timpiilor pentru a evita suprapunerile între chunk-uri
-            for i in range(len(segments) - 1):
-                if segments[i]['end'] > segments[i+1]['start']:
-                    # Dacă există suprapunere, tăiem sfârșitul segmentului curent la începutul următorului
-                    segments[i]['end'] = segments[i+1]['start']
-
             # Determinăm limbile predominante pentru raportare
+            from collections import Counter
             lang_counter = Counter([item['language'] for item in language_per_chunk])
             primary_language = lang_counter.most_common(1)[0][0] if lang_counter else 'unknown'
             secondary_languages = [lang for lang, count in lang_counter.most_common()[1:3]]
-
-            # La final, salvăm un raport complet despre limbile detectate
-            language_report_path = os.path.join(process_dir, 'language_report.json')
-            with open(language_report_path, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'primary_language': primary_language,
-                    'secondary_languages': secondary_languages,
-                    'languages_detected': dict(lang_counter),
-                    'total_segments': len(segments),
-                    'chunks': language_per_chunk,
-                    'total_chunks': total_chunks
-                }, f, ensure_ascii=False, indent=2)
 
             print(f"📊 Raport limbă pe chunk-uri:")
             for item in language_per_chunk:
@@ -2036,6 +2004,21 @@ def background_processing_task(original_path, model_name, language, translation_
         # Ne asigurăm doar că folderul procesului este corect identificat.
         process_dir = get_process_dir(process_id)
 
+        # Salvează raportul de limbi
+        language_report_path = os.path.join(process_dir, 'language_report.json')
+        if os.path.exists(language_report_path):
+            # Deja salvat, nu facem nimic
+            pass
+        else:
+            # Salvăm informațiile
+            with open(language_report_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'primary_language': detected_language,
+                    'secondary_languages': secondary_languages,
+                    'languages_detected': languages_detected,
+                    'total_segments': len(segments)
+                }, f, ensure_ascii=False, indent=2)
+
         # Creează segmentele originale - PĂSTRĂM INFORMAȚIA DESPRE LIMBA FIECĂRUI SEGMENT
         original_segments = []
         for i, segment in enumerate(segments):
@@ -2067,7 +2050,7 @@ def background_processing_task(original_path, model_name, language, translation_
             translation_start = time.time()
             try:
                 # Folosește traducerea multilingvă care ține cont de limba fiecărui segment
-                translated = translate_multilingual_segments(segments, translation_target, process_id, overall_language=detected_language)
+                translated = translate_multilingual_segments(segments, translation_target, process_id)
                 translation_time = time.time() - translation_start
 
                 # Creăm segmentele traduse
@@ -2137,6 +2120,20 @@ def background_processing_task(original_path, model_name, language, translation_
             video_playback_path = os.path.join(app.config['UPLOAD_FOLDER'], f"video_playback_{process_id}.mp4")
             if os.path.exists(video_playback_path):
                 video_duration = get_video_duration(video_playback_path)
+
+        # Salvează metadatele proiectului
+        project_data = {
+            'project_name': original_filename,
+            'original_filename': original_filename,
+            'process_id': process_id,
+            'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'duration': video_duration,
+            'language': detected_language,
+            'is_video': is_video,
+            'model_used': model_name
+        }
+        with open(os.path.join(process_dir, 'project.json'), 'w', encoding='utf-8') as f:
+            json.dump(project_data, f, ensure_ascii=False, indent=2)
 
         final_result = {
             'success': True,
@@ -2231,7 +2228,7 @@ def background_translation_task(process_id, target_lang):
             })
 
         # Traducem cu fallback la limba predominantă
-        translated = translate_multilingual_segments(whisper_segments, target_lang, process_id, overall_language=overall_lang)
+        translated = translate_multilingual_segments(whisper_segments, target_lang, process_id)
 
         # Formatăm rezultatul
         translated_segments = []
@@ -2941,6 +2938,241 @@ def language_report(process_id):
             return jsonify(report)
         else:
             return jsonify({'error': 'Raportul nu a fost găsit'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/projects')
+def list_projects():
+    """Listează toate proiectele disponibile pe server"""
+    projects = []
+    try:
+        if not os.path.exists(app.config['UPLOAD_FOLDER']):
+            return jsonify([])
+
+        for folder in os.listdir(app.config['UPLOAD_FOLDER']):
+            if folder.startswith('process_'):
+                process_id = folder.replace('process_', '')
+                process_dir = os.path.join(app.config['UPLOAD_FOLDER'], folder)
+                project_file = os.path.join(process_dir, 'project.json')
+
+                if os.path.exists(project_file):
+                    with open(project_file, 'r', encoding='utf-8') as f:
+                        meta = json.load(f)
+                        projects.append(meta)
+                else:
+                    # Fallback dacă nu are project.json
+                    projects.append({
+                        'project_name': f"Proiect {process_id}",
+                        'process_id': process_id,
+                        'created_at': "Necunoscut"
+                    })
+
+        # Sortăm după data creării (descrescător)
+        projects.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        return jsonify(projects)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/rename_project/<process_id>', methods=['POST'])
+def rename_project(process_id):
+    """Redenumește un proiect existent"""
+    try:
+        data = request.get_json()
+        new_name = data.get('name')
+        if not new_name:
+            return jsonify({'error': 'Numele nou lipsește'}), 400
+
+        process_dir = get_process_dir(process_id)
+        project_file = os.path.join(process_dir, 'project.json')
+
+        if os.path.exists(project_file):
+            with open(project_file, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+
+            meta['project_name'] = new_name
+
+            with open(project_file, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+
+            return jsonify({'success': True, 'project_name': new_name})
+        else:
+            # Creăm un project.json nou dacă nu există
+            meta = {
+                'project_name': new_name,
+                'process_id': process_id,
+                'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            with open(project_file, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+            return jsonify({'success': True, 'project_name': new_name})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/load_project/<process_id>')
+def load_project(process_id):
+    """Încarcă un proiect în sesiunea curentă"""
+    try:
+        process_dir = get_process_dir(process_id)
+        project_file = os.path.join(process_dir, 'project.json')
+
+        if not os.path.exists(process_dir):
+            return jsonify({'error': 'Proiectul nu există'}), 404
+
+        # Setăm process_id în sesiune
+        session['process_id'] = process_id
+
+        meta = {}
+        if os.path.exists(project_file):
+            with open(project_file, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+
+        # Verificăm ce fișiere avem
+        has_video = os.path.exists(os.path.join(app.config['UPLOAD_FOLDER'], f'video_playback_{process_id}.mp4'))
+        has_original = os.path.exists(os.path.join(process_dir, 'original_segments.json'))
+
+        # Returnăm metadatele pentru a inițializa UI-ul
+        return jsonify({
+            'success': True,
+            'process_id': process_id,
+            'metadata': meta,
+            'has_video': has_video,
+            'has_original_segments': has_original
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/export_project/<process_id>')
+def export_project(process_id):
+    """Exportă proiectul ca fișier .stum (ZIP)"""
+    try:
+        process_dir = get_process_dir(process_id)
+        if not os.path.exists(process_dir):
+            return jsonify({'error': 'Proiectul nu există'}), 404
+
+        memory_file = io.BytesIO()
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Adăugăm fișierele din folderul procesului
+            for root, dirs, files in os.walk(process_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, process_dir)
+                    zf.write(file_path, arcname)
+
+            # Adăugăm fișierele de playback din folderul de upload-uri
+            for f in os.listdir(app.config['UPLOAD_FOLDER']):
+                if process_id in f and not os.path.isdir(os.path.join(app.config['UPLOAD_FOLDER'], f)):
+                    # Evităm să adăugăm folderul procesului din nou dacă suntem în upload folder
+                    if not f.startswith('process_'):
+                        zf.write(os.path.join(app.config['UPLOAD_FOLDER'], f), f"media/{f}")
+
+        memory_file.seek(0)
+
+        # Obținem numele proiectului pentru filename
+        project_name = f"project_{process_id}"
+        project_file = os.path.join(process_dir, 'project.json')
+        if os.path.exists(project_file):
+            with open(project_file, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+                project_name = meta.get('project_name', project_name)
+
+        # Securizăm numele fișierului
+        safe_name = "".join([c for c in project_name if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
+
+        return send_file(
+            memory_file,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f"{safe_name}.stum"
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/import_project', methods=['POST'])
+def import_project():
+    """Importă un proiect dintr-un fișier .stum (ZIP)"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'Niciun fișier trimis'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'Nume fișier gol'}), 400
+
+        # Generăm un nou process_id pentru import
+        new_process_id = str(uuid.uuid4())[:8]
+        process_dir = get_process_dir(new_process_id)
+        os.makedirs(process_dir, exist_ok=True)
+
+        with zipfile.ZipFile(file, 'r') as zf:
+            # Extragem totul
+            zf.extractall(process_dir)
+
+            # Mutăm fișierele media înapoi în folderul de upload-uri dacă există
+            media_dir = os.path.join(process_dir, 'media')
+            if os.path.exists(media_dir):
+                for f in os.listdir(media_dir):
+                    # Redenumim fișierul media cu noul process_id dacă e cazul
+                    # Dar e mai bine să păstrăm structura sau să actualizăm referințele
+                    old_path = os.path.join(media_dir, f)
+
+                    # Detectăm tipul de fișier media și îl redenumim
+                    new_filename = f
+                    if 'video_playback_' in f:
+                        ext = f.split('.')[-1]
+                        new_filename = f"video_playback_{new_process_id}.{ext}"
+                    elif 'preview_' in f:
+                        ext = f.split('.')[-1]
+                        new_filename = f"preview_{new_process_id}.{ext}"
+
+                    shutil.move(old_path, os.path.join(app.config['UPLOAD_FOLDER'], new_filename))
+
+                shutil.rmtree(media_dir)
+
+        # Actualizăm project.json cu noul process_id
+        project_file = os.path.join(process_dir, 'project.json')
+        if os.path.exists(project_file):
+            with open(project_file, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+
+            meta['process_id'] = new_process_id
+
+            with open(project_file, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+
+        session['process_id'] = new_process_id
+        return jsonify({
+            'success': True,
+            'process_id': new_process_id,
+            'message': 'Proiect importat cu succes'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/delete_project/<process_id>', methods=['DELETE'])
+def delete_project(process_id):
+    """Șterge un proiect complet"""
+    try:
+        process_dir = get_process_dir(process_id)
+        if os.path.exists(process_dir):
+            import shutil
+            shutil.rmtree(process_dir)
+
+            # Ștergem și fișierele din uploads
+            for f in os.listdir(app.config['UPLOAD_FOLDER']):
+                if process_id in f:
+                    try:
+                        os.remove(os.path.join(app.config['UPLOAD_FOLDER'], f))
+                    except:
+                        pass
+
+            if session.get('process_id') == process_id:
+                session.pop('process_id', None)
+
+            return jsonify({'success': True})
+        else:
+            return jsonify({'error': 'Proiectul nu există'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
