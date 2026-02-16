@@ -154,46 +154,8 @@ SUPPORTED_LANGUAGES = {
     'uk': 'Ucraineană'
 }
 
-# Modele de traducere mai bune (NLLB-200 pentru traduceri multilingve de calitate)
-TRANSLATION_MODELS_CONFIG = {
-    # Model NLLB-200 (No Language Left Behind) - 200 de limbi, calitate bună
-    'nllb': {
-        'name': 'facebook/nllb-200-distilled-600M',
-        'display_name': 'NLLB-200 (Multilingv, 600M)',
-        'languages': {
-            'en': 'eng_Latn', 'ro': 'ron_Latn', 'fr': 'fra_Latn', 'de': 'deu_Latn',
-            'es': 'spa_Latn', 'it': 'ita_Latn', 'ru': 'rus_Cyrl', 'zh': 'zho_Hans',
-            'ja': 'jpn_Jpan', 'ko': 'kor_Hang', 'ar': 'ara_Arab', 'hi': 'hin_Deva',
-            'pt': 'por_Latn', 'nl': 'nld_Latn', 'pl': 'pol_Latn', 'tr': 'tur_Latn',
-            'sv': 'swe_Latn', 'da': 'dan_Latn', 'fi': 'fin_Latn', 'no': 'nob_Latn',
-            'cs': 'ces_Latn', 'hu': 'hun_Latn', 'bg': 'bul_Cyrl', 'el': 'ell_Grek',
-            'uk': 'ukr_Cyrl', 'vi': 'vie_Latn', 'th': 'tha_Thai', 'he': 'heb_Hebr',
-            'id': 'ind_Latn', 'ms': 'zsm_Latn', 'fa': 'pes_Arab', 'ur': 'urd_Arab',
-            'sw': 'swh_Latn', 'sk': 'slk_Latn', 'sl': 'slv_Latn'
-        }
-    },
-    # Modele MarianMT (specifice perechilor de limbi) - calitate foarte bună pentru perechile specifice
-    'marian': {
-        'models': {
-            'en-ro': 'Helsinki-NLP/opus-mt-en-ro',
-            # 'ro-en' nu există ca model separat, folosim NLLB-200 pentru traducerea inversă
-            'en-fr': 'Helsinki-NLP/opus-mt-en-fr',
-            'fr-en': 'Helsinki-NLP/opus-mt-fr-en',
-            'en-de': 'Helsinki-NLP/opus-mt-en-de',
-            'de-en': 'Helsinki-NLP/opus-mt-de-en',
-            'en-es': 'Helsinki-NLP/opus-mt-en-es',
-            'es-en': 'Helsinki-NLP/opus-mt-es-en',
-            'en-it': 'Helsinki-NLP/opus-mt-en-it',
-            'it-en': 'Helsinki-NLP/opus-mt-it-en',
-            'en-ru': 'Helsinki-NLP/opus-mt-en-ru',
-            'ru-en': 'Helsinki-NLP/opus-mt-ru-en',
-            'en-sk': 'Helsinki-NLP/opus-mt-en-sk',
-            'sk-en': 'Helsinki-NLP/opus-mt-sk-en',
-            'en-sl': 'Helsinki-NLP/opus-mt-en-sl',
-            'sl-en': 'Helsinki-NLP/opus-mt-zls-en',
-        }
-    }
-}
+# Configurare traducere (Mistral LLM)
+# Înlocuiește vechiul sistem TRANSLATION_MODELS_CONFIG
 
 # Limbi pentru traducere cu etichete ușor de înțeles
 TRANSLATION_LANGUAGES = {
@@ -290,238 +252,8 @@ def load_model(model_name=DEFAULT_MODEL):
                         
         return loaded_models[model_name]
 
-def load_translation_model(source_lang, target_lang):
-    """Încarcă modelul de traducere pentru o pereche de limbi"""
-    global translation_models
-    
-    model_key = f"{source_lang}-{target_lang}"
-    
-    with translation_lock:
-        if model_key in translation_models:
-            return translation_models[model_key]
-        
-        print(f"Se încarcă modelul de traducere: {source_lang}->{target_lang}...")
-        start_time = time.time()
-        
-        try:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            
-            # MODELE SPECIFICE PENTRU FIECARE PERECHE
-            model_map = TRANSLATION_MODELS_CONFIG['marian']['models'].copy()
-            # Mapare specială pentru Romanian -> English (ROMANCE-en include ro)
-            if 'ro-en' not in model_map:
-                model_map['ro-en'] = 'Helsinki-NLP/opus-mt-ROMANCE-en'
-            
-            if model_key in model_map:
-                model_name = model_map[model_key]
-                print(f"Încarc modelul Opus-MT: {model_name}")
-                
-                tokenizer = MarianTokenizer.from_pretrained(model_name)
-                model = MarianMTModel.from_pretrained(model_name).to(device)
-                model_type = 'marian'
-            else:
-                # Fallback la NLLB-200 (mai modern și suportă mai multe limbi)
-                model_name = TRANSLATION_MODELS_CONFIG['nllb']['name']
-                print(f"Încarc modelul NLLB-200: {model_name}")
-                
-                tokenizer = AutoTokenizer.from_pretrained(model_name)
-                model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
-                model_type = 'nllb'
-            
-            load_time = time.time() - start_time
-            
-            translation_models[model_key] = {
-                'model': model,
-                'tokenizer': tokenizer,
-                'device': device,
-                'load_time': load_time,
-                'source': source_lang,
-                'target': target_lang,
-                'model_name': model_name,
-                'model_type': model_type
-            }
-            
-            print(f"✓ Model traducere {model_key} încărcat în {load_time:.1f} secunde pe {device}")
-            return translation_models[model_key]
-            
-        except Exception as e:
-            print(f"✗ Eroare la încărcarea modelului de traducere: {str(e)}")
-            
-            # Fallback: încercă să încarce pe CPU
-            try:
-                print("Încerc încărcare pe CPU...")
-                device = "cpu"
-                
-                if model_key in model_map:
-                    model_name = model_map[model_key]
-                    tokenizer = MarianTokenizer.from_pretrained(model_name)
-                    model = MarianMTModel.from_pretrained(model_name).to(device)
-                    model_type = 'marian'
-                else:
-                    model_name = TRANSLATION_MODELS_CONFIG['nllb']['name']
-                    tokenizer = AutoTokenizer.from_pretrained(model_name)
-                    model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
-                    model_type = 'nllb'
-                
-                translation_models[model_key] = {
-                    'model': model,
-                    'tokenizer': tokenizer,
-                    'device': device,
-                    'load_time': time.time() - start_time,
-                    'source': source_lang,
-                    'target': target_lang,
-                    'model_name': model_name,
-                    'model_type': model_type
-                }
-                
-                print(f"✓ Model traducere {model_key} încărcat pe CPU")
-                return translation_models[model_key]
-                
-            except Exception as e2:
-                print(f"✗ Eroare critică la încărcarea modelului: {str(e2)}")
-                return None
-
-def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, process_id=None, current_idx=0, total_segments=0):
-    """Traduce un batch de segmente păstrând timecode-ul"""
-    if not segments or source_lang == target_lang:
-        return segments
-    
-    try:
-        # Încarcă modelul de traducere
-        model_data = load_translation_model(source_lang, target_lang)
-        
-        if not model_data:
-            print(f"✗ Nu există model de traducere pentru {source_lang}->{target_lang}")
-            return segments
-        
-        model = model_data['model']
-        tokenizer = model_data['tokenizer']
-        device = model_data['device']
-        model_type = model_data['model_type']
-        
-        translated_segments = []
-        
-        for i in range(0, len(segments), batch_size):
-            # Update progress
-            if process_id:
-                prog_idx = current_idx + i
-                progress_val = 20 + int((prog_idx / total_segments) * 70) if total_segments > 0 else 50
-                update_task_status(process_id, 'processing', progress_val, f"Traducere: {prog_idx}/{total_segments} segmente...")
-
-            batch = segments[i:i+batch_size]
-            batch_texts = [seg['text'] for seg in batch]
-            
-            try:
-                if model_type == 'marian':
-                    # MarianMT/Opus-MT - direct translation
-                    inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
-                    translated = model.generate(**inputs, max_length=512, num_beams=4, early_stopping=True)
-                    translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
-                    
-                elif model_type == 'nllb':
-                    # NLLB-200 - Folosim batch_size=1 pentru stabilitate maximă
-                    src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
-                    tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
-
-                    if hasattr(tokenizer, 'src_lang'):
-                        tokenizer.src_lang = src_code
-
-                    forced_bos_token_id = None
-                    try:
-                        # Prioritate identificare ID limbă țintă pentru NLLB
-                        if hasattr(tokenizer, 'get_lang_id'):
-                            forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
-                        elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
-                            forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
-                        else:
-                            forced_bos_token_id = tokenizer.convert_tokens_to_ids(tgt_code)
-                    except:
-                        pass
-
-                    # Trecem src_lang explicit în tokenizer
-                    inputs = tokenizer(
-                        batch_texts,
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=512,
-                        src_lang=src_code
-                    ).to(device)
-                    
-                    # Parametri optimizați pentru NLLB-200 pentru a evita repetițiile și halucinațiile
-                    gen_kwargs = {
-                        "max_length": 512,
-                        "num_beams": 5,
-                        "early_stopping": True,
-                        "no_repeat_ngram_size": 3,
-                        "do_sample": False,
-                        "repetition_penalty": 1.2
-                    }
-                    if forced_bos_token_id is not None:
-                        gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
-
-                    translated = model.generate(**inputs, **gen_kwargs)
-                    translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
-                
-                else:
-                    # Fallback pentru alte modele
-                    translated_texts = batch_texts
-                
-                # Creează segmentele traduse cu timecode-uri originale
-                for j, seg in enumerate(batch):
-                    if j < len(translated_texts):
-                        trans_text = translated_texts[j].strip()
-                        orig_text = seg['text'].strip()
-
-                        # Verificare: dacă traducerea e identică cu originalul (hallucination/copy)
-                        # și originalul e suficient de lung pentru a nu fi doar un "ok"
-                        if trans_text == orig_text and len(orig_text) > 10:
-                            print(f"  ⚠️ Traducerea locală pare identică cu sursa pentru segmentul {i+j}. Încerc Google...")
-                            try:
-                                # Adăugăm un mic delay și timeout pentru a evita blocarea
-                                import time
-                                time.sleep(0.1)
-                                g_trans = GoogleTranslator(source=source_lang, target=target_lang).translate(orig_text)
-                                if g_trans:
-                                    trans_text = g_trans.strip()
-                            except:
-                                pass
-
-                        translated_seg = seg.copy()
-                        translated_seg['text'] = trans_text
-                        translated_segments.append(translated_seg)
-                    else:
-                        # Fallback: păstrează textul original
-                        translated_segments.append(seg)
-                        
-            except Exception as e:
-                print(f"⚠️ Eroare la traducerea locală a batch-ului {i}: {str(e)}. Încerc Google Translate...")
-                try:
-                    # Fallback la Google Translate (prin deep-translator)
-                    # Notă: GoogleTranslator nu are un parametru de timeout direct în constructor
-                    # dar se bazează pe requests care poate fi configurat global dacă e nevoie.
-                    translator = GoogleTranslator(source=source_lang, target=target_lang)
-
-                    for seg in batch:
-                        try:
-                            translated_text = translator.translate(seg['text'])
-                            if translated_text:
-                                translated_seg = seg.copy()
-                                translated_seg['text'] = translated_text.strip()
-                                translated_segments.append(translated_seg)
-                            else:
-                                translated_segments.append(seg)
-                        except:
-                            translated_segments.append(seg)
-                except Exception as ge:
-                    print(f"❌ Eșec total traducere (Local & Google): {ge}")
-                    translated_segments.extend(batch)
-        
-        return translated_segments
-        
-    except Exception as e:
-        print(f"✗ Eroare la traducere: {str(e)}")
-        return segments
+# Vechiul sistem de traducere MarianMT/NLLB a fost înlocuit cu Mistral LLM
+# Funcțiile load_translation_model și translate_segment_batch au fost eliminate.
 
 def translate_multilingual_segments(segments, target_lang, process_id=None):
     """
@@ -598,175 +330,160 @@ def translate_multilingual_segments(segments, target_lang, process_id=None):
     return translated_segments
 
 def translate_segments(segments, source_lang, target_lang, process_id=None):
-    """Traduce toate segmentele păstrând timecode-ul și structura"""
+    """
+    Traduce segmentele folosind modelul Mistral (LLM).
+    Înlocuiește vechiul sistem MarianMT/NLLB.
+    """
     if not segments or source_lang == target_lang:
         return segments
-    
-    # LOGICĂ PIVOT: Dacă nu avem model direct MarianMT dar avem src->en și en->tgt, folosim pivot prin engleză
-    # Aceasta rezolvă problemele de calitate (halucinații) pentru perechi precum sl-ro
-    model_map = TRANSLATION_MODELS_CONFIG['marian']['models']
-    direct_key = f"{source_lang}-{target_lang}"
 
-    if direct_key not in model_map and source_lang != 'en' and target_lang != 'en':
-        pivot_src_key = f"{source_lang}-en"
-        pivot_tgt_key = f"en-{target_lang}"
+    print(f"🤖 Traducere AI (Mistral) din {source_lang} în {target_lang}...")
+    print(f"   Număr segmente: {len(segments)}")
 
-        # Caz special ro-en (folosește ROMANCE-en)
-        is_pivot_possible = (pivot_src_key in model_map or source_lang == 'ro') and pivot_tgt_key in model_map
-
-        if is_pivot_possible:
-            print(f"🔄 Folosesc pivot EN pentru traducere: {source_lang} -> en -> {target_lang}")
-            try:
-                # Pas 1: source -> en
-                intermediate_segments = translate_segments(segments, source_lang, 'en', process_id=process_id)
-                if intermediate_segments:
-                    # Pas 2: en -> target
-                    return translate_segments(intermediate_segments, 'en', target_lang, process_id=process_id)
-            except Exception as e:
-                print(f"⚠️ Eroare la traducere pivot: {e}. Fallback la NLLB.")
-
-    print(f"Încep traducerea din {source_lang} în {target_lang}...")
-    print(f"Număr segmente: {len(segments)}")
     start_time = time.time()
     
     try:
-        # Împarte segmentele în grupuri de lungimi similare pentru o traducere mai bună
-        translated_segments = []
-        
-        # Grupează segmentele scurte pentru traducere mai eficientă
-        short_segments = []
-        long_segments = []
-        
-        for seg in segments:
-            text_length = len(seg['text'])
-            if text_length < 50:  # Segmente scurte
-                short_segments.append(seg)
-            else:  # Segmente lungi
-                long_segments.append(seg)
-        
-        # Traduce segmentele scurte în batch-uri
-        if short_segments:
-            # Determinăm batch_size în funcție de model
-            # NLLB-200 este mai sensibil la batch-uri mari, MarianMT e OK
-            model_key = f"{source_lang}-{target_lang}"
-            is_nllb = model_key not in TRANSLATION_MODELS_CONFIG['marian']['models']
-            current_batch_size = 1 if is_nllb else 10
+        # Încărcăm LLM
+        llm = load_llm()
+        if not llm:
+            print("⚠️ LLM nu este disponibil. Returnez segmentele originale.")
+            return segments
 
-            print(f"Traduc {len(short_segments)} segmente scurte (batch_size={current_batch_size})...")
-            translated_short = translate_segment_batch(
-                short_segments, source_lang, target_lang,
-                batch_size=current_batch_size,
-                process_id=process_id,
-                current_idx=0,
-                total_segments=len(segments)
-            )
-            translated_segments.extend(translated_short)
+        batch_size = 20
+        all_translated = []
+        total_batches = math.ceil(len(segments) / batch_size)
         
-        # Traduce segmentele lungi individual pentru mai multă precizie
-        if long_segments:
-            print(f"Traduc {len(long_segments)} segmente lungi...")
-            for i, seg in enumerate(long_segments):
+        # Mapare coduri de limbă la nume complete pentru prompt
+        lang_names = {
+            'ro': 'Română', 'en': 'Engleză', 'fr': 'Franceză', 'de': 'Germană',
+            'es': 'Spaniolă', 'it': 'Italiană', 'ru': 'Rusă'
+        }
+        target_name = lang_names.get(target_lang, target_lang)
+
+        system_prompt = (
+            f"Ești un traducător profesionist expert în subtitrări. "
+            f"Sarcina ta este să traduci segmentele primite din limba sursă în limba {target_name}. "
+            "Păstrează formatul [ID] Text pe fiecare linie. "
+            "Păstrează numerotarea originală a ID-urilor. "
+            "Tradu într-un mod natural, adaptat contextului. "
+            "NU adăuga explicații, comentarii sau alte texte. Doar lista tradusă."
+        )
+
+        for i in range(0, len(segments), batch_size):
+            batch = segments[i : i + batch_size]
+            current_batch_num = (i // batch_size) + 1
+
+            # Raportăm progresul în statusul task-ului dacă avem un process_id
+            if process_id:
+                progress = int((current_batch_num / total_batches) * 100)
+                update_task_status(process_id, 'processing', progress,
+                                   f'Traducere AI: batch {current_batch_num}/{total_batches}...')
+
+            text_to_translate = ""
+            for idx, seg in enumerate(batch):
+                # Whisper segments might not have 'id', so we use a relative one if needed
+                # But our translation logic usually expects ids starting from i+1
+                seg_id = seg.get('id', i + idx + 1)
+                text_to_translate += f"[{seg_id}] {seg['text']}\n"
+
+            user_input = f"Segmente de tradus:\n{text_to_translate}"
+
+            print(f"🤖 Batch {current_batch_num}/{total_batches} ({len(batch)} segmente)...")
+
+            with gpu_processing_lock:
+                response = llm.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_input}
+                    ],
+                    temperature=0.2,
+                    max_tokens=4096
+                )
+
+            llm_text = response['choices'][0]['message']['content'].strip()
+
+            # Parsăm batch-ul tradus
+            import re
+            lines = llm_text.split('\n')
+            translated_map = {}
+            for line in lines:
                 try:
-                    # Traduce fiecare segment lung individual
-                    batch_result = translate_segment_batch(
-                        [seg], source_lang, target_lang,
-                        batch_size=1,
-                        process_id=process_id,
-                        current_idx=len(short_segments) + i,
-                        total_segments=len(segments)
-                    )
-                    if batch_result:
-                        translated_segments.append(batch_result[0])
-                    else:
-                        translated_segments.append(seg)
+                    match = re.search(r'\[(\d+)\]\s*(.*)', line)
+                    if not match:
+                        match = re.search(r'^(\d+)[\.\)]\s*(.*)', line)
+
+                    if match:
+                        sid = int(match.group(1))
+                        text = match.group(2).strip()
+                        if text:
+                            translated_map[sid] = text
                 except:
-                    translated_segments.append(seg)
-        
-        # Asigură-te că ordinea este păstrată
-        translated_segments.sort(key=lambda x: x['start'])
-        
+                    continue
+
+            # Reconstruim segmentele traduse păstrând restul datelor
+            for idx, seg in enumerate(batch):
+                seg_id = seg.get('id', i + idx + 1)
+                translated_seg = seg.copy()
+                if seg_id in translated_map:
+                    translated_seg['text'] = translated_map[seg_id]
+                else:
+                    # Fallback la Google Translate dacă Mistral a sărit peste el
+                    try:
+                        translated_seg['text'] = GoogleTranslator(source='auto', target=target_lang).translate(seg['text'])
+                    except:
+                        pass # Păstrează originalul
+                all_translated.append(translated_seg)
+
         translation_time = time.time() - start_time
-        print(f"✓ Traducere completă în {translation_time:.1f} secunde")
+        print(f"✓ Traducere AI completă în {translation_time:.1f} secunde")
         
-        return translated_segments
+        return all_translated
         
     except Exception as e:
-        print(f"✗ Eroare la traducere: {str(e)}")
-        # În caz de eroare, returnează segmentele originale
+        print(f"❌ Eroare la traducerea AI: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return segments
 
 def translate_text(text, source_lang, target_lang):
-    """Traduce text folosind modelul corespunzător"""
+    """
+    Traduce text folosind modelul Mistral (LLM).
+    Fallback la Google Translate dacă eșuează.
+    """
     if not text or not text.strip() or source_lang == target_lang:
         return text
     
     text = text.strip()
     
     try:
-        # Încarcă modelul de traducere
-        model_data = load_translation_model(source_lang, target_lang)
+        llm = load_llm()
+        if not llm:
+            return GoogleTranslator(source='auto', target=target_lang).translate(text)
+
+        lang_names = {'ro': 'Română', 'en': 'Engleză', 'fr': 'Franceză', 'de': 'Germană'}
+        target_name = lang_names.get(target_lang, target_lang)
+
+        prompt = f"Tradu următorul text în limba {target_name}. Răspunde DOAR cu traducerea:\n\n{text}"
         
-        if not model_data:
-            return text
-        
-        model = model_data['model']
-        tokenizer = model_data['tokenizer']
-        device = model_data['device']
-        model_type = model_data['model_type']
-        
-        if model_type == 'marian':
-            # MarianMT
-            inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
-            translated = model.generate(**inputs, max_length=512, num_beams=4, early_stopping=True)
-            result = tokenizer.decode(translated[0], skip_special_tokens=True)
-            
-        elif model_type == 'nllb':
-            # NLLB-200
-            src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
-            tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
-            
-            # Setează limba sursă
-            if hasattr(tokenizer, 'src_lang'):
-                tokenizer.src_lang = src_code
-            
-            # Obține ID-ul limbii țintă
-            forced_bos_token_id = None
-            try:
-                if hasattr(tokenizer, 'get_lang_id'):
-                    forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
-                elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
-                    forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
-            except:
-                pass
-            
-            inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
-            
-            if forced_bos_token_id is not None:
-                translated = model.generate(
-                    **inputs,
-                    forced_bos_token_id=forced_bos_token_id,
-                    max_length=512,
-                    num_beams=4,
-                    early_stopping=True
-                )
-            else:
-                translated = model.generate(
-                    **inputs,
-                    max_length=512,
-                    num_beams=4,
-                    early_stopping=True
-                )
-            
-            result = tokenizer.decode(translated[0], skip_special_tokens=True)
-        
-        else:
-            result = text
-        
-        return result.strip()
+        with gpu_processing_lock:
+            response = llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": "Ești un traducător expert."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=512
+            )
+
+        result = response['choices'][0]['message']['content'].strip()
+        return result
         
     except Exception as e:
-        print(f"Eroare la traducere text: {str(e)}")
-        return text
+        print(f"⚠️ Eroare la traducere AI text: {str(e)}. Fallback la Google.")
+        try:
+            return GoogleTranslator(source='auto', target=target_lang).translate(text)
+        except:
+            return text
 
 def get_model_info(model_name):
     """Returnează informații despre model"""
@@ -2712,18 +2429,6 @@ def set_translation_target():
             })
         elif target_language in TRANSLATION_LANGUAGES:
             session['translation_target'] = target_language
-            current_lang = session.get('selected_language', 'auto')
-            
-            def load_translation_background(src, tgt):
-                try:
-                    if src != 'auto':
-                        load_translation_model(src, tgt)
-                except Exception as e:
-                    print(f"Eroare la încărcarea modelului de traducere: {str(e)}")
-            
-            thread = threading.Thread(target=load_translation_background, args=(current_lang, target_language))
-            thread.daemon = True
-            thread.start()
             
             return jsonify({
                 'success': True,
@@ -2831,20 +2536,20 @@ def model_status():
             else:
                 status[model_name] = {'loaded': False}
         
-        translation_status = {}
-        for model_key in translation_models.keys():
-            translation_status[model_key] = {
-                'loaded': True,
-                'device': translation_models[model_key]['device'],
-                'source': translation_models[model_key]['source'],
-                'target': translation_models[model_key]['target']
+        translation_status = {
+            'mistral-ai': {
+                'loaded': llm_instance is not None,
+                'device': 'cuda' if llm_instance is not None else 'N/A',
+                'source': 'any',
+                'target': 'any'
             }
+        }
         
         system_info = {
             'cuda_available': torch.cuda.is_available(),
             'cpu_count': os.cpu_count(),
             'total_models_loaded': len(loaded_models),
-            'translation_models_loaded': len(translation_models)
+            'llm_loaded': llm_instance is not None
         }
         
         return jsonify({
@@ -3669,27 +3374,17 @@ def get_translation_capabilities():
         
         for target_code, target_name in TRANSLATION_LANGUAGES.items():
             if target_code != current_lang:
-                marian_key = f"{current_lang}-{target_code}"
-                reverse_marian_key = f"{target_code}-{current_lang}"
-                
-                model_type = 'nllb'
-                if marian_key in TRANSLATION_MODELS_CONFIG['marian']['models']:
-                    model_type = 'marian'
-                elif reverse_marian_key in TRANSLATION_MODELS_CONFIG['marian']['models']:
-                    model_type = 'marian'
-                
                 available_targets.append({
                     'code': target_code,
                     'name': target_name,
-                    'model_type': model_type,
-                    'quality': 'high' if model_type == 'marian' else 'good'
+                    'model_type': 'mistral-ai',
+                    'quality': 'high'
                 })
         
         return jsonify({
             'current_language': current_lang,
             'available_targets': available_targets,
-            'total_languages': len(TRANSLATION_LANGUAGES),
-            'high_quality_models': list(TRANSLATION_MODELS_CONFIG['marian']['models'].keys())
+            'total_languages': len(TRANSLATION_LANGUAGES)
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -3885,15 +3580,20 @@ def cleanup():
         with model_lock:
             loaded_models.clear()
             translation_models.clear()
+
+            global llm_instance
+            with llm_lock:
+                llm_instance = None
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
             
         return jsonify({
             'success': True,
-            'message': 'Memorie curățată',
+            'message': 'Memorie curățată (inclusiv LLM)',
             'models_loaded': len(loaded_models),
-            'translation_models_loaded': len(translation_models)
+            'llm_loaded': False
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
