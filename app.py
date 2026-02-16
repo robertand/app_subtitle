@@ -2555,10 +2555,16 @@ def get_existing_translations():
                 except:
                     count = 0
 
+                # Detectăm dacă este o traducere AI
+                is_ai = file.startswith('translated_segments_ai_')
+                actual_lang_code = lang_code.replace('ai_', '') if is_ai else lang_code
+
                 translations.append({
                     'target_language': lang_code,
-                    'target_name': TRANSLATION_LANGUAGES.get(lang_code, lang_code),
-                    'segment_count': count
+                    'target_name': TRANSLATION_LANGUAGES.get(actual_lang_code, actual_lang_code),
+                    'display_name': f"AI: {TRANSLATION_LANGUAGES.get(actual_lang_code, actual_lang_code)}" if is_ai else TRANSLATION_LANGUAGES.get(actual_lang_code, actual_lang_code),
+                    'segment_count': count,
+                    'is_ai': is_ai
                 })
 
         # Obține info despre original
@@ -3480,16 +3486,13 @@ def background_llm_task(ai_task_id, parent_process_id, prompt, segments, is_tran
         if not process_dir:
             raise ValueError(f"Directorul proiectului {parent_process_id} nu a fost găsit.")
 
-        if is_translated and target_lang:
-            filename = f"translated_segments_{target_lang}.json"
-        else:
-            filename = "original_segments.json"
-
         # Re-generăm și SRT pentru ca schimbările să fie vizibile imediat la descărcare
         if is_translated and target_lang:
-            json_filename = f"translated_segments_{target_lang}.json"
-            srt_filename = f"transcription_{parent_process_id}_{target_lang}.srt"
+            # Traducere AI
+            json_filename = f"translated_segments_ai_{target_lang}.json"
+            srt_filename = f"transcription_{parent_process_id}_ai_{target_lang}.srt"
         else:
+            # Corectare Original
             json_filename = "original_segments.json"
             srt_filename = f"transcription_{parent_process_id}.srt"
 

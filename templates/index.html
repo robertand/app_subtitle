@@ -2018,9 +2018,14 @@
                 <div class="ai-prompt-container">
                     <textarea id="aiPrompt" class="ai-prompt-textarea"
                               placeholder="Ex: Corectează greșelile gramaticale... sau: Reformulează mai formal... sau: Asigură-te că numele 'Whisper' este scris corect peste tot."></textarea>
-                    <button class="ai-btn" id="aiProcessBtn" onclick="processWithAI()">
-                        <i class="fas fa-magic"></i> Procesează cu AI
-                    </button>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button class="ai-btn" id="aiProcessBtn" onclick="processWithAI(false)">
+                            <i class="fas fa-magic"></i> Corectează (Original)
+                        </button>
+                        <button class="ai-btn" id="aiTranslateBtn" onclick="processWithAI(true)" style="background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);">
+                            <i class="fas fa-language"></i> Traducere AI
+                        </button>
+                    </div>
                     <div id="aiLoading" style="display: none; font-size: 0.9em; color: #db2777;">
                         <i class="fas fa-spinner fa-spin"></i> Mistral procesează segmentele... Te rugăm să aștepți.
                     </div>
@@ -3627,11 +3632,27 @@
         }
 
         // Procesează subtitrările cu AI (Asincron)
-        async function processWithAI() {
-            const prompt = document.getElementById('aiPrompt').value.trim();
-            if (!prompt) {
-                showToast('Te rugăm să introduci o instrucțiune pentru AI', 'warning');
-                return;
+        async function processWithAI(isTranslation) {
+            let prompt = document.getElementById('aiPrompt').value.trim();
+
+            // Dacă este traducere, dar nu am ales limba țintă
+            let targetLang = currentTranslationLang;
+            if (isTranslation) {
+                targetLang = translationSelect.value;
+                if (!targetLang) {
+                    showToast('Selectează o limbă țintă în panoul de traducere!', 'warning');
+                    return;
+                }
+
+                if (!prompt) {
+                    prompt = `Tradu aceste subtitrări în limba ${targetLang}. Păstrează sensul original și folosește un limbaj natural.`;
+                } else {
+                    prompt = `Tradu aceste subtitrări în limba ${targetLang}. Instrucțiuni suplimentare: ${prompt}`;
+                }
+            } else {
+                if (!prompt) {
+                    prompt = "Corectează greșelile gramaticale și de punctuație păstrând limba originală.";
+                }
             }
 
             if (!currentSegments || currentSegments.length === 0) {
@@ -3640,25 +3661,30 @@
             }
 
             const aiBtn = document.getElementById('aiProcessBtn');
+            const aiTransBtn = document.getElementById('aiTranslateBtn');
             const aiLoading = document.getElementById('aiLoading');
             const aiPrompt = document.getElementById('aiPrompt');
 
             aiBtn.disabled = true;
+            if (aiTransBtn) aiTransBtn.disabled = true;
             aiLoading.style.display = 'block';
             aiPrompt.disabled = true;
 
             try {
                 showToast('Sarcina AI a fost trimisă...', 'info');
 
+                // Când traducem, trimitem întotdeauna originalSegments ca sursă
+                const segmentsToProcess = isTranslation ? originalSegments : currentSegments;
+
                 const response = await fetch('/api/llm_process', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         prompt: prompt,
-                        segments: currentSegments,
+                        segments: segmentsToProcess,
                         process_id: processId,
-                        is_translated: !!currentTranslationLang,
-                        target_lang: currentTranslationLang
+                        is_translated: isTranslation,
+                        target_lang: targetLang
                     })
                 });
 
@@ -3706,14 +3732,19 @@
                     if (result.updated_count > 0) {
                         showToast(result.message, 'success');
                     } else {
-                        showToast('AI a terminat, dar nu a putut identifica segmente de actualizat. Verifică formatul instrucțiunilor.', 'warning');
+                        showToast('AI a terminat, dar nu a putut identifica segmente de actualizat.', 'warning');
                     }
+
+                    // Actualizăm biblioteca și lista de versiuni
+                    refreshTranslationsList();
+                    loadProjects();
 
                     // Force a UI refresh for the full text preview as well
                     const fullText = currentSegments.map(s => s.text).join(' ');
                     document.getElementById('fullText').textContent = fullText;
 
                     aiBtn.disabled = false;
+                    if (document.getElementById('aiTranslateBtn')) document.getElementById('aiTranslateBtn').disabled = false;
                     aiLoading.style.display = 'none';
                     aiPrompt.disabled = false;
                 } else if (data.status === 'error') {
@@ -3945,8 +3976,8 @@
                             html += `
                                 <div class="translation-item ${currentTranslationLang === trans.target_language ? 'active' : ''}" 
                                      onclick="loadTranslation('${trans.target_language}')">
-                                    <span class="translation-lang">${trans.target_language}</span>
-                                    <span>(${trans.target_name})</span>
+                                    <span class="translation-lang" style="${trans.is_ai ? 'color: #6366f1;' : ''}">${trans.target_language}</span>
+                                    <span>(${trans.display_name || trans.target_name})</span>
                                     <button class="translation-action" onclick="downloadTranslationSRT('${trans.target_language}', event)">
                                         <i class="fas fa-download"></i>
                                     </button>
