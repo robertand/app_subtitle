@@ -3403,10 +3403,10 @@ def background_llm_task(ai_task_id, parent_process_id, prompt, segments, is_tran
         # Încărcăm LLM
         llm = load_llm()
         if not llm:
-            update_task_status(process_id, 'error', message='Modelul LLM nu este disponibil pe server.')
+            update_task_status(ai_task_id, 'error', message='Modelul LLM nu este disponibil pe server.')
             return
 
-        batch_size = 25 # Procesăm batch-uri mici pentru a evita timeout și a menține controlul
+        batch_size = 20 # Procesăm batch-uri mici pentru a evita timeout și a menține controlul
         all_segments = segments.copy()
         updated_count = 0
         total_batches = math.ceil(len(segments) / batch_size)
@@ -3443,30 +3443,37 @@ def background_llm_task(ai_task_id, parent_process_id, prompt, segments, is_tran
                         {"role": "user", "content": user_input}
                     ],
                     temperature=0.2,
-                    max_tokens=2048
+                    max_tokens=4096
                 )
 
             llm_text = response['choices'][0]['message']['content'].strip()
 
-            # Parsăm batch-ul curent
+            # Parsăm batch-ul curent (mai robust)
+            import re
             lines = llm_text.split('\n')
             for line in lines:
                 try:
-                    if '[' in line and ']' in line:
-                        parts = line.split(']', 1)
-                        seg_id_str = parts[0].replace('[', '').replace(']', '').strip()
-                        if not seg_id_str.isdigit(): continue
+                    # Căutăm formatul [ID] Text sau ID. Text
+                    match = re.search(r'\[(\d+)\]\s*(.*)', line)
+                    if not match:
+                        match = re.search(r'^(\d+)[\.\)]\s*(.*)', line)
 
-                        seg_id = int(seg_id_str)
-                        new_text = parts[1].strip()
+                    if match:
+                        seg_id = int(match.group(1))
+                        new_text = match.group(2).strip()
 
-                        # Căutăm segmentul în batch-ul original (sau în toate dacă vrem să fim safe)
+                        if not new_text: continue
+
+                        # Căutăm segmentul în toate segmentele
                         segment = next((s for s in all_segments if s['id'] == seg_id), None)
                         if segment:
                             segment['text'] = new_text
                             updated_count += 1
                 except:
                     continue
+
+            # Mică pauză pentru status update
+            time.sleep(0.5)
 
         # La final salvăm rezultatul în directorul părintelui (proiectul)
         process_dir = get_process_dir(parent_process_id)
@@ -3478,10 +3485,28 @@ def background_llm_task(ai_task_id, parent_process_id, prompt, segments, is_tran
         else:
             filename = "original_segments.json"
 
-        # Re-generăm și SRT dacă e cazul (sau lăsăm utilizatorul să salveze manual)
-        # Pentru consistență, salvăm JSON-ul pe disc
-        with open(os.path.join(process_dir, filename), 'w', encoding='utf-8') as f:
+        # Re-generăm și SRT pentru ca schimbările să fie vizibile imediat la descărcare
+        if is_translated and target_lang:
+            json_filename = f"translated_segments_{target_lang}.json"
+            srt_filename = f"transcription_{parent_process_id}_{target_lang}.srt"
+        else:
+            json_filename = "original_segments.json"
+            srt_filename = f"transcription_{parent_process_id}.srt"
+
+        # Salvăm JSON
+        with open(os.path.join(process_dir, json_filename), 'w', encoding='utf-8') as f:
             json.dump({'segments': all_segments}, f, ensure_ascii=False, indent=2)
+
+        # Salvăm SRT
+        srt_path = os.path.join(process_dir, srt_filename)
+        srt_segments = []
+        for seg in all_segments:
+            srt_segments.append({
+                'start': seg['start'],
+                'end': seg['end'],
+                'text': seg['text']
+            })
+        write_srt(srt_segments, srt_path)
 
         final_result = {
             'success': True,

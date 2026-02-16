@@ -3690,6 +3690,9 @@
 
                 if (data.status === 'completed') {
                     const result = data.result;
+                    console.log('AI task completed. Segments received:', result.segments.length);
+                    console.log('Updated count:', result.updated_count);
+
                     currentSegments = result.segments;
 
                     // Actualizăm memoria locală
@@ -3700,7 +3703,15 @@
                     }
 
                     displaySegments(currentSegments);
-                    showToast(result.message, 'success');
+                    if (result.updated_count > 0) {
+                        showToast(result.message, 'success');
+                    } else {
+                        showToast('AI a terminat, dar nu a putut identifica segmente de actualizat. Verifică formatul instrucțiunilor.', 'warning');
+                    }
+
+                    // Force a UI refresh for the full text preview as well
+                    const fullText = currentSegments.map(s => s.text).join(' ');
+                    document.getElementById('fullText').textContent = fullText;
 
                     aiBtn.disabled = false;
                     aiLoading.style.display = 'none';
