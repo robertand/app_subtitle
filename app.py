@@ -70,13 +70,23 @@ def load_llm(model_path=LLM_MODEL_PATH):
             print(f"🐘 Se încarcă LLM: {os.path.basename(model_path)}...")
             try:
                 # Configurație optimizată pentru A6000 (48GB VRAM)
+                # Adăugăm n_batch pentru a mări viteza de procesare a prompturilor (prompt processing)
+                # n_threads setat pe numărul de cores pentru a asista GPU-ul unde e nevoie
+                import psutil
+                cpu_count = psutil.cpu_count(logical=False) or 4
+
+                print(f"  CUDA: Activare n_gpu_layers=-1 (A6000), n_batch=512, n_threads={cpu_count}")
+
                 llm_instance = Llama(
                     model_path=model_path,
-                    n_gpu_layers=-1, # Toate straturile pe GPU
-                    n_ctx=8192,      # Context generos pentru subtitrări lungi
-                    verbose=False
+                    n_gpu_layers=-1,   # Toate straturile pe GPU
+                    n_ctx=8192,        # Context generos pentru subtitrări lungi
+                    n_batch=512,       # Batch size mai mare pentru prompt-uri (viteză CUDA)
+                    n_threads=cpu_count,
+                    offload_kqv=True,  # Offload Key-Query-Value pentru economie VRAM/viteză
+                    verbose=True       # Activăm verbose temporar pentru a vedea log-urile de CUDA în consolă
                 )
-                print("✓ LLM încărcat cu succes!")
+                print(f"✓ LLM încărcat cu succes! GPU Layers offloaded: {llm_instance.n_gpu_layers}")
             except Exception as e:
                 print(f"✗ Eroare la încărcarea LLM: {str(e)}")
                 return None
@@ -514,6 +524,65 @@ def get_model_info(model_name):
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
+def get_optimal_split_points(audio_path, chunk_duration=300):
+    """
+    Folosește Whisper 'tiny' pentru a găsi cele mai bune puncte de tăiere
+    (sfârșit de propoziție) în jurul intervalelor de 5 minute.
+    """
+    print(f"🔍 Caut puncte optime de tăiere pentru chunks de ~{chunk_duration/60:.0f} min...")
+    try:
+        # Încărcăm modelul tiny (e foarte mic și rapid)
+        # Folosim gpu_processing_lock pentru a nu se bate cu alte procesări GPU
+        with gpu_processing_lock:
+            # Forțăm tiny pe GPU dacă e disponibil
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model_tiny = whisper.load_model("tiny", device=device)
+            # Transcriem rapid pentru a obține timestamp-urile
+            result = model_tiny.transcribe(audio_path, verbose=False)
+
+        segments = result.get('segments', [])
+        if not segments:
+            print("  ⚠️ Nu s-au găsit segmente cu modelul tiny. Folosesc fallback logic.")
+            return None
+
+        total_duration = segments[-1]['end']
+        split_points = [0.0]
+
+        current_target = chunk_duration
+        while current_target < total_duration:
+            # Găsește segmentul a cărui final e cel mai aproape de current_target
+            best_split = None
+            min_diff = float('inf')
+
+            # Căutăm în segmentele existente cel mai apropiat punct de sfârșit
+            for seg in segments:
+                diff = abs(seg['end'] - current_target)
+                if diff < min_diff:
+                    min_diff = diff
+                    best_split = seg['end']
+
+            # Dacă am găsit un punct valid și este după ultimul punct de tăiere
+            if best_split and best_split > split_points[-1]:
+                # Dacă punctul este mult prea departe de target (> 60s), facem fallback logic
+                if abs(best_split - current_target) > 60:
+                    best_split = current_target
+
+                split_points.append(best_split)
+                current_target = best_split + chunk_duration
+            else:
+                # Fallback: dacă nu găsim un punct logic, folosim target-ul fix
+                split_points.append(current_target)
+                current_target += chunk_duration
+
+        if split_points[-1] < total_duration:
+            split_points.append(total_duration)
+
+        print(f"✅ Am găsit {len(split_points)-1} chunks cu puncte de tăiere naturale.")
+        return split_points
+    except Exception as e:
+        print(f"⚠️ Eroare la găsirea punctelor optime (split): {e}")
+        return None
 
 def get_process_dir(process_id):
     """Returnează directorul dedicat pentru un proces de transcriere"""
@@ -1396,9 +1465,19 @@ def process_large_file(file_path, model_name, language, translation_target,
             result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
             duration = float(result.stdout.strip())
 
-            # Chunks de 10 minute
-            chunk_duration = 600
-            total_chunks = math.ceil(duration / chunk_duration)
+            # --- INTELLIGENT SPLITTING (SFÂRȘIT DE PROPOZIȚIE) ---
+            # Folosim chunks de ~5 minute (300s)
+            split_points = get_optimal_split_points(full_audio_path, chunk_duration=300)
+
+            if split_points:
+                total_chunks = len(split_points) - 1
+            else:
+                # Fallback la chunks fixe de 5 minute dacă splitting-ul inteligent eșuează
+                print("  ⚠️ Fallback la chunking fix de 5 min.")
+                chunk_duration = 300
+                total_chunks = math.ceil(duration / chunk_duration)
+                split_points = [i * chunk_duration for i in range(total_chunks)]
+                split_points.append(duration)
 
             print(f"Durata totală: {duration:.1f}s, Chunks: {total_chunks}")
 
@@ -1414,8 +1493,9 @@ def process_large_file(file_path, model_name, language, translation_target,
                     print(f"Task {process_id} anulat în timpul procesării chunks.")
                     return None
 
-                start_chunk = chunk_idx * chunk_duration
-                length_chunk = min(chunk_duration, duration - start_chunk)
+                start_chunk = split_points[chunk_idx]
+                end_chunk = split_points[chunk_idx + 1]
+                length_chunk = end_chunk - start_chunk
 
                 # Evită chunk-uri insignifiante
                 if length_chunk < 0.1:
