@@ -1792,6 +1792,9 @@
                 <h3><i class="fas fa-sliders-h"></i> Parametri Avansați Whisper</h3>
 
                 <div class="button-group" style="margin-bottom: 15px;">
+                    <button class="btn btn-secondary" onclick="setRomanianOptimization()" style="padding: 8px 15px; font-size: 0.85em; background: #667eea;">
+                        <i class="fas fa-magic"></i> Optimizare Română
+                    </button>
                     <button class="btn btn-secondary" onclick="setMusicMode()" style="padding: 8px 15px; font-size: 0.85em;">
                         <i class="fas fa-music"></i> Mod Muzică/Ambianță
                     </button>
@@ -2368,6 +2371,19 @@
         }
 
         // Setări Whisper
+        function setRomanianOptimization() {
+            document.getElementById('noSpeechThreshold').value = 0.70;
+            document.getElementById('logprobThreshold').value = -1.5;
+            document.getElementById('compressionRatio').value = 2.4;
+            document.getElementById('conditionOnPreviousText').checked = false;
+
+            document.getElementById('noSpeechThresholdValue').textContent = "0.70";
+            document.getElementById('logprobThresholdValue').textContent = "-1.5";
+            document.getElementById('compressionRatioValue').textContent = "2.4";
+
+            showToast('Optimizare Română: Dezactivat "condition_on_previous_text" pentru a evita repetițiile.', 'info');
+        }
+
         function setMusicMode() {
             document.getElementById('noSpeechThreshold').value = 0.85;
             document.getElementById('logprobThreshold').value = -2.0;

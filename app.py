@@ -1322,6 +1322,54 @@ def apply_timing_padding(segments, padding=0.5, max_gap=1.5):
             segments[i]['end'] = min(segments[i]['end'] + padding, segments[i+1]['start'])
     return segments
 
+def deduplicate_segments(segments, threshold=0.85):
+    """
+    Elimină segmentele consecutive care sunt identice sau foarte similare (bâlbâială Whisper).
+    Specific util pentru limba română unde Whisper tinde să repete propoziții scurte.
+    """
+    if not segments:
+        return segments
+
+    filtered = []
+    for i, seg in enumerate(segments):
+        if not filtered:
+            filtered.append(seg)
+            continue
+
+        prev = filtered[-1]
+
+        # Curățăm textul pentru comparație
+        text1 = prev['text'].strip().lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+        text2 = seg['text'].strip().lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+
+        if not text1 or not text2:
+            filtered.append(seg)
+            continue
+
+        # Verificăm dacă sunt identice
+        is_duplicate = False
+        if text1 == text2:
+            is_duplicate = True
+        elif len(text1) > 8 and len(text2) > 8:
+            # Similitudine bazată pe cuvinte
+            w1 = text1.split()
+            w2 = text2.split()
+            if w1 and w2:
+                common = set(w1) & set(w2)
+                sim = len(common) / max(len(w1), len(w2))
+                if sim > threshold:
+                    is_duplicate = True
+
+        if is_duplicate:
+            # Extindem durata segmentului anterior pentru a acoperi și acest timp
+            prev['end'] = max(prev['end'], seg['end'])
+            print(f"  [Deduplicare] Eliminat segment repetat: '{seg['text'].strip()}'")
+            continue
+
+        filtered.append(seg)
+
+    return filtered
+
 def adjust_segmentation_algorithm(segments, min_duration=1.0, max_duration=5.0, max_chars=80):
     """
     Ajustează segmentarea utilizând word timestamps dacă sunt disponibile.
@@ -1416,7 +1464,7 @@ def adjust_segmentation_algorithm(segments, min_duration=1.0, max_duration=5.0, 
         if not final_segments:
             final_segments.append(seg)
             continue
-            
+
         last = final_segments[-1]
 
         # Dacă segmentul curent este foarte scurt, îl combinăm cu anteriorul
@@ -1716,6 +1764,10 @@ def process_large_file(file_path, model_name, language, translation_target,
                                 transcribe_kwargs['no_speech_threshold'] = 0.6
                             if 'logprob_threshold' not in transcribe_kwargs:
                                 transcribe_kwargs['logprob_threshold'] = -1.0
+                            if 'condition_on_previous_text' not in transcribe_kwargs:
+                                # IMPORTANT: Dezactivăm implicit pentru a evita repetițiile (stuttering)
+                                # Mai ales important pentru limba română
+                                transcribe_kwargs['condition_on_previous_text'] = False
 
                             chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
 
@@ -1770,6 +1822,11 @@ def process_large_file(file_path, model_name, language, translation_target,
 
             # Procesează segmentele combinate
             segments = sorted(all_segments, key=lambda x: x['start'])
+
+            # Elimină repetițiile (bâlbâiala Whisper)
+            print(f"Aplic deduplicarea segmentelor (inițial: {len(segments)})...")
+            segments = deduplicate_segments(segments)
+            print(f"După deduplicare: {len(segments)} segmente.")
 
             if should_adjust_segmentation:
                 segments = adjust_segmentation_algorithm(segments)
@@ -1880,6 +1937,11 @@ def process_normal_file(file_path, model, device, language, translation_target,
             raise Exception(f"Durată audio invalidă: {audio_dur}")
 
         result = model.transcribe(audio_path, **transcribe_kwargs)
+
+        # Post-procesare pentru eliminarea repetițiilor în modul normal
+        if 'segments' in result:
+            result['segments'] = deduplicate_segments(result['segments'])
+
     except Exception as e:
         print(f"Eroare la transcriere: {str(e)}")
         # Încearcă să transcrie direct fișierul original fără parametri speciali
