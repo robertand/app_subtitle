@@ -22,6 +22,7 @@ import hashlib
 import math
 import traceback
 from collections import Counter
+from llama_cpp import Llama
 
 # Configurare director de date local
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
@@ -51,6 +52,35 @@ upload_lock = threading.Lock()
 
 # Managementul task-urilor în background
 processing_tasks = {}
+
+# Instanță globală LLM
+llm_instance = None
+llm_lock = threading.Lock()
+LLM_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf')
+
+def load_llm(model_path=LLM_MODEL_PATH):
+    """Încarcă modelul LLM folosind llama-cpp-python"""
+    global llm_instance
+    with llm_lock:
+        if llm_instance is None:
+            if not os.path.exists(model_path):
+                print(f"⚠️ Modelul LLM nu a fost găsit la: {model_path}")
+                return None
+
+            print(f"🐘 Se încarcă LLM: {os.path.basename(model_path)}...")
+            try:
+                # Configurație optimizată pentru A6000 (48GB VRAM)
+                llm_instance = Llama(
+                    model_path=model_path,
+                    n_gpu_layers=-1, # Toate straturile pe GPU
+                    n_ctx=8192,      # Context generos pentru subtitrări lungi
+                    verbose=False
+                )
+                print("✓ LLM încărcat cu succes!")
+            except Exception as e:
+                print(f"✗ Eroare la încărcarea LLM: {str(e)}")
+                return None
+        return llm_instance
 
 # Lock pentru procesare GPU (pentru a evita supraîncărcarea memoriei video)
 gpu_processing_lock = threading.RLock()
@@ -3302,6 +3332,88 @@ def check_video(process_id):
         return jsonify({'success': False})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/llm_process', methods=['POST'])
+def api_llm_process():
+    """Procesează subtitrările folosind LLM (Mistral) pe baza unui prompt"""
+    try:
+        data = request.get_json()
+        prompt = data.get('prompt')
+        segments = data.get('segments', [])
+        process_id = data.get('process_id')
+        is_translated = data.get('is_translated', False)
+        target_lang = data.get('target_lang')
+
+        if not prompt:
+            return jsonify({'error': 'Prompt-ul lipsește'}), 400
+        if not segments:
+            return jsonify({'error': 'Nu există segmente de procesat'}), 400
+
+        # Încărcăm LLM
+        llm = load_llm()
+        if not llm:
+            return jsonify({'error': 'Modelul LLM nu este disponibil pe server. Verificați calea: models/Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf'}), 503
+
+        # Pregătim textul pentru LLM
+        # Trimitem textul segmentat cu ID-uri pentru a putea reface structura
+        text_to_process = ""
+        for seg in segments:
+            text_to_process += f"[{seg['id']}] {seg['text']}\n"
+
+        system_prompt = (
+            "Ești un asistent expert în editarea subtitrărilor. "
+            "Vei primi o listă de segmente sub forma [ID] Text. "
+            "Sarcina ta este să modifici/corectezi textul conform instrucțiunilor utilizatorului, "
+            "păstrând formatul [ID] Text pe fiecare linie. "
+            "NU adăuga explicații, comentarii sau alte texte. Doar lista modificată."
+        )
+
+        user_input = f"Instrucțiuni: {prompt}\n\nSegmente:\n{text_to_process}"
+
+        print(f"🤖 LLM procesează {len(segments)} segmente...")
+
+        with gpu_processing_lock:
+            response = llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_input}
+                ],
+                temperature=0.3,
+                max_tokens=4096
+            )
+
+        llm_text = response['choices'][0]['message']['content'].strip()
+
+        # Parsăm rezultatul înapoi în segmente
+        updated_count = 0
+        lines = llm_text.split('\n')
+        for line in lines:
+            try:
+                if '[' in line and ']' in line:
+                    parts = line.split(']', 1)
+                    seg_id = int(parts[0].replace('[', '').strip())
+                    new_text = parts[1].strip()
+
+                    # Căutăm segmentul corespunzător
+                    segment = next((s for s in segments if s['id'] == seg_id), None)
+                    if segment:
+                        segment['text'] = new_text
+                        updated_count += 1
+            except:
+                continue
+
+        print(f"✓ LLM a actualizat {updated_count} segmente")
+
+        return jsonify({
+            'success': True,
+            'segments': segments,
+            'updated_count': updated_count,
+            'message': f'AI a procesat și actualizat {updated_count} segmente.'
+        })
+
+    except Exception as e:
+        print(f"✗ Eroare AI: {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/segments_json/<process_id>/<filename>')
 def segments_json(process_id, filename):

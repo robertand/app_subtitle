@@ -1378,6 +1378,73 @@
             border-top: 1px solid #e2e8f0;
         }
 
+        /* AI Assistant Section */
+        .ai-assistant-section {
+            background: #fdf2f8;
+            border-radius: 15px;
+            padding: 20px;
+            margin: 25px 0;
+            border: 2px solid #f472b6;
+            animation: fadeIn 0.5s;
+        }
+
+        .ai-assistant-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            color: #db2777;
+        }
+
+        .ai-prompt-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .ai-prompt-textarea {
+            width: 100%;
+            min-height: 80px;
+            padding: 12px;
+            border: 2px solid #fbcfe8;
+            border-radius: 10px;
+            font-size: 0.95em;
+            resize: vertical;
+        }
+
+        .ai-prompt-textarea:focus {
+            outline: none;
+            border-color: #f472b6;
+            box-shadow: 0 0 0 3px rgba(244, 114, 182, 0.1);
+        }
+
+        .ai-btn {
+            background: linear-gradient(135deg, #ec4899 0%, #db2777 100%);
+            color: white;
+            border: none;
+            padding: 10px 25px;
+            border-radius: 50px;
+            cursor: pointer;
+            font-weight: bold;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            align-self: flex-start;
+            transition: all 0.2s;
+        }
+
+        .ai-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(219, 39, 119, 0.3);
+        }
+
+        .ai-btn:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
         /* Debug button */
         .debug-btn {
             background: #805ad5;
@@ -1938,6 +2005,24 @@
             
             <h3><i class="fas fa-list"></i> Segmente cu timecode:</h3>
             <div class="segments" id="segmentsList"></div>
+
+            <!-- AI Assistant Section -->
+            <div class="ai-assistant-section" id="aiAssistantSection" style="display: none;">
+                <div class="ai-assistant-header">
+                    <h3><i class="fas fa-robot"></i> Asistent AI (Mistral Small)</h3>
+                    <span style="font-size: 0.8em; color: #718096;">Corectează și modifică subtitrările cu limbaj natural</span>
+                </div>
+                <div class="ai-prompt-container">
+                    <textarea id="aiPrompt" class="ai-prompt-textarea"
+                              placeholder="Ex: Corectează greșelile gramaticale... sau: Reformulează mai formal... sau: Asigură-te că numele 'Whisper' este scris corect peste tot."></textarea>
+                    <button class="ai-btn" id="aiProcessBtn" onclick="processWithAI()">
+                        <i class="fas fa-magic"></i> Procesează cu AI
+                    </button>
+                    <div id="aiLoading" style="display: none; font-size: 0.9em; color: #db2777;">
+                        <i class="fas fa-spinner fa-spin"></i> Mistral procesează segmentele... Te rugăm să aștepți.
+                    </div>
+                </div>
+            </div>
             
             <div id="transcriptionButtons" class="button-group">
                 <button class="btn" id="saveEditsBtn" onclick="saveEdits()" style="background: #805ad5;">
@@ -3519,7 +3604,75 @@
                 
                 // Arată butonul pentru traduceri multiple
                 showMultipleTranslationsBtn.style.display = 'inline-flex';
+
+                // Arată asistentul AI
+                document.getElementById('aiAssistantSection').style.display = 'block';
             }, 500);
+        }
+
+        // Procesează subtitrările cu AI
+        async function processWithAI() {
+            const prompt = document.getElementById('aiPrompt').value.trim();
+            if (!prompt) {
+                showToast('Te rugăm să introduci o instrucțiune pentru AI', 'warning');
+                return;
+            }
+
+            if (!currentSegments || currentSegments.length === 0) {
+                showToast('Nu există segmente de procesat', 'error');
+                return;
+            }
+
+            const aiBtn = document.getElementById('aiProcessBtn');
+            const aiLoading = document.getElementById('aiLoading');
+            const aiPrompt = document.getElementById('aiPrompt');
+
+            aiBtn.disabled = true;
+            aiLoading.style.display = 'block';
+            aiPrompt.disabled = true;
+
+            try {
+                showToast('AI începe procesarea...', 'info');
+
+                const response = await fetch('/api/llm_process', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prompt: prompt,
+                        segments: currentSegments,
+                        process_id: processId,
+                        is_translated: !!currentTranslationLang,
+                        target_lang: currentTranslationLang
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    currentSegments = data.segments;
+
+                    // Dacă procesăm originalul, actualizăm și originalSegments
+                    if (!currentTranslationLang) {
+                        originalSegments = JSON.parse(JSON.stringify(data.segments));
+                    } else if (currentTranslationLang) {
+                        // Dacă procesăm o traducere, actualizăm în multipleTranslations
+                        multipleTranslations[currentTranslationLang] = JSON.parse(JSON.stringify(data.segments));
+                    }
+
+                    displaySegments(currentSegments);
+                    showToast(data.message, 'success');
+                } else {
+                    throw new Error(data.error || 'Eroare AI necunoscută');
+                }
+            } catch (error) {
+                console.error('Eroare AI:', error);
+                showError(`Eroare AI: ${error.message}`);
+                showToast('AI a întâmpinat o eroare', 'error');
+            } finally {
+                aiBtn.disabled = false;
+                aiLoading.style.display = 'none';
+                aiPrompt.disabled = false;
+            }
         }
         
         // Restul funcțiilor rămân la fel (displaySegments, toggleSegmentsTranslation, etc.)
