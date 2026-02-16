@@ -3395,14 +3395,117 @@ def check_video(process_id):
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
+def background_llm_task(ai_task_id, parent_process_id, prompt, segments, is_translated, target_lang):
+    """Task de background pentru procesarea LLM în batch-uri"""
+    try:
+        update_task_status(ai_task_id, 'processing', 5, 'Se inițializează asistentul AI...')
+
+        # Încărcăm LLM
+        llm = load_llm()
+        if not llm:
+            update_task_status(process_id, 'error', message='Modelul LLM nu este disponibil pe server.')
+            return
+
+        batch_size = 25 # Procesăm batch-uri mici pentru a evita timeout și a menține controlul
+        all_segments = segments.copy()
+        updated_count = 0
+        total_batches = math.ceil(len(segments) / batch_size)
+
+        system_prompt = (
+            "Ești un asistent expert în editarea subtitrărilor. "
+            "Vei primi o listă de segmente sub forma [ID] Text. "
+            "Sarcina ta este să modifici/corectezi textul conform instrucțiunilor utilizatorului, "
+            "păstrând formatul [ID] Text pe fiecare linie. "
+            "Păstrează numerotarea segmentelor. "
+            "NU adăuga explicații, comentarii sau alte texte. Doar lista modificată."
+        )
+
+        for i in range(0, len(segments), batch_size):
+            batch = segments[i : i + batch_size]
+            current_batch_num = (i // batch_size) + 1
+
+            update_task_status(ai_task_id, 'processing',
+                               int((current_batch_num / total_batches) * 100),
+                               f'AI procesează batch {current_batch_num}/{total_batches}...')
+
+            text_to_process = ""
+            for seg in batch:
+                text_to_process += f"[{seg['id']}] {seg['text']}\n"
+
+            user_input = f"Instrucțiuni: {prompt}\n\nSegmente de procesat:\n{text_to_process}"
+
+            print(f"🤖 LLM procesează batch {current_batch_num}/{total_batches} ({len(batch)} segmente)...")
+
+            with gpu_processing_lock:
+                response = llm.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_input}
+                    ],
+                    temperature=0.2,
+                    max_tokens=2048
+                )
+
+            llm_text = response['choices'][0]['message']['content'].strip()
+
+            # Parsăm batch-ul curent
+            lines = llm_text.split('\n')
+            for line in lines:
+                try:
+                    if '[' in line and ']' in line:
+                        parts = line.split(']', 1)
+                        seg_id_str = parts[0].replace('[', '').replace(']', '').strip()
+                        if not seg_id_str.isdigit(): continue
+
+                        seg_id = int(seg_id_str)
+                        new_text = parts[1].strip()
+
+                        # Căutăm segmentul în batch-ul original (sau în toate dacă vrem să fim safe)
+                        segment = next((s for s in all_segments if s['id'] == seg_id), None)
+                        if segment:
+                            segment['text'] = new_text
+                            updated_count += 1
+                except:
+                    continue
+
+        # La final salvăm rezultatul în directorul părintelui (proiectul)
+        process_dir = get_process_dir(parent_process_id)
+        if not process_dir:
+            raise ValueError(f"Directorul proiectului {parent_process_id} nu a fost găsit.")
+
+        if is_translated and target_lang:
+            filename = f"translated_segments_{target_lang}.json"
+        else:
+            filename = "original_segments.json"
+
+        # Re-generăm și SRT dacă e cazul (sau lăsăm utilizatorul să salveze manual)
+        # Pentru consistență, salvăm JSON-ul pe disc
+        with open(os.path.join(process_dir, filename), 'w', encoding='utf-8') as f:
+            json.dump({'segments': all_segments}, f, ensure_ascii=False, indent=2)
+
+        final_result = {
+            'success': True,
+            'segments': all_segments,
+            'updated_count': updated_count,
+            'is_translated': is_translated,
+            'target_lang': target_lang,
+            'message': f'AI a finalizat procesarea. {updated_count} segmente actualizate.'
+        }
+
+        update_task_status(ai_task_id, 'completed', 100, 'AI a finalizat procesarea!', final_result)
+
+    except Exception as e:
+        print(f"✗ Eroare în background_llm_task: {traceback.format_exc()}")
+        update_task_status(ai_task_id, 'error', message=str(e))
+
 @app.route('/api/llm_process', methods=['POST'])
 def api_llm_process():
-    """Procesează subtitrările folosind LLM (Mistral) pe baza unui prompt"""
+    """Inițiază procesarea subtitrărilor folosind LLM în background"""
     try:
         data = request.get_json()
         prompt = data.get('prompt')
         segments = data.get('segments', [])
-        process_id = data.get('process_id')
+        parent_process_id = data.get('process_id') # ID-ul proiectului
         is_translated = data.get('is_translated', False)
         target_lang = data.get('target_lang')
 
@@ -3411,70 +3514,21 @@ def api_llm_process():
         if not segments:
             return jsonify({'error': 'Nu există segmente de procesat'}), 400
 
-        # Încărcăm LLM
-        llm = load_llm()
-        if not llm:
-            return jsonify({'error': 'Modelul LLM nu este disponibil pe server. Verificați calea: models/Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf'}), 503
+        # Generăm un nou ID pentru task-ul AI (bazat pe cel al proiectului)
+        ai_task_id = f"ai_{parent_process_id}_{str(uuid.uuid4())[:4]}"
 
-        # Pregătim textul pentru LLM
-        # Trimitem textul segmentat cu ID-uri pentru a putea reface structura
-        text_to_process = ""
-        for seg in segments:
-            text_to_process += f"[{seg['id']}] {seg['text']}\n"
+        # Setează starea inițială
+        update_task_status(ai_task_id, 'queued', 0, 'Sarcina AI a fost adăugată în coadă...')
 
-        system_prompt = (
-            "Ești un asistent expert în editarea subtitrărilor. "
-            "Vei primi o listă de segmente sub forma [ID] Text. "
-            "Sarcina ta este să modifici/corectezi textul conform instrucțiunilor utilizatorului, "
-            "păstrând formatul [ID] Text pe fiecare linie. "
-            "NU adăuga explicații, comentarii sau alte texte. Doar lista modificată."
-        )
+        # Lansează task-ul în background
+        thread = threading.Thread(target=background_llm_task, args=(
+            ai_task_id, parent_process_id, prompt, segments, is_translated, target_lang
+        ))
+        thread.start()
 
-        user_input = f"Instrucțiuni: {prompt}\n\nSegmente:\n{text_to_process}"
-
-        print(f"🤖 LLM procesează {len(segments)} segmente...")
-
-        with gpu_processing_lock:
-            response = llm.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_input}
-                ],
-                temperature=0.3,
-                max_tokens=4096
-            )
-
-        llm_text = response['choices'][0]['message']['content'].strip()
-
-        # Parsăm rezultatul înapoi în segmente
-        updated_count = 0
-        lines = llm_text.split('\n')
-        for line in lines:
-            try:
-                if '[' in line and ']' in line:
-                    parts = line.split(']', 1)
-                    seg_id = int(parts[0].replace('[', '').strip())
-                    new_text = parts[1].strip()
-
-                    # Căutăm segmentul corespunzător
-                    segment = next((s for s in segments if s['id'] == seg_id), None)
-                    if segment:
-                        segment['text'] = new_text
-                        updated_count += 1
-            except:
-                continue
-
-        print(f"✓ LLM a actualizat {updated_count} segmente")
-
-        return jsonify({
-            'success': True,
-            'segments': segments,
-            'updated_count': updated_count,
-            'message': f'AI a procesat și actualizat {updated_count} segmente.'
-        })
+        return jsonify({'success': True, 'process_id': ai_task_id})
 
     except Exception as e:
-        print(f"✗ Eroare AI: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/segments_json/<process_id>/<filename>')

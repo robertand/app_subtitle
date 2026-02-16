@@ -3626,7 +3626,7 @@
             }, 500);
         }
 
-        // Procesează subtitrările cu AI
+        // Procesează subtitrările cu AI (Asincron)
         async function processWithAI() {
             const prompt = document.getElementById('aiPrompt').value.trim();
             if (!prompt) {
@@ -3648,7 +3648,7 @@
             aiPrompt.disabled = true;
 
             try {
-                showToast('AI începe procesarea...', 'info');
+                showToast('Sarcina AI a fost trimisă...', 'info');
 
                 const response = await fetch('/api/llm_process', {
                     method: 'POST',
@@ -3664,27 +3664,60 @@
 
                 const data = await response.json();
 
-                if (data.success) {
-                    currentSegments = data.segments;
-
-                    // Dacă procesăm originalul, actualizăm și originalSegments
-                    if (!currentTranslationLang) {
-                        originalSegments = JSON.parse(JSON.stringify(data.segments));
-                    } else if (currentTranslationLang) {
-                        // Dacă procesăm o traducere, actualizăm în multipleTranslations
-                        multipleTranslations[currentTranslationLang] = JSON.parse(JSON.stringify(data.segments));
-                    }
-
-                    displaySegments(currentSegments);
-                    showToast(data.message, 'success');
+                if (data.success && data.process_id) {
+                    pollAITaskStatus(data.process_id);
                 } else {
-                    throw new Error(data.error || 'Eroare AI necunoscută');
+                    throw new Error(data.error || 'Eroare la inițierea sarcinii AI');
                 }
             } catch (error) {
                 console.error('Eroare AI:', error);
-                showError(`Eroare AI: ${error.message}`);
-                showToast('AI a întâmpinat o eroare', 'error');
-            } finally {
+                showToast('Eroare AI: ' + error.message, 'error');
+                aiBtn.disabled = false;
+                aiLoading.style.display = 'none';
+                aiPrompt.disabled = false;
+            }
+        }
+
+        // Monitorizează statusul sarcinii AI
+        async function pollAITaskStatus(taskId) {
+            const aiLoading = document.getElementById('aiLoading');
+            const aiBtn = document.getElementById('aiProcessBtn');
+            const aiPrompt = document.getElementById('aiPrompt');
+
+            try {
+                const response = await fetch(`/api/task_status/${taskId}`);
+                const data = await response.json();
+
+                if (data.status === 'completed') {
+                    const result = data.result;
+                    currentSegments = result.segments;
+
+                    // Actualizăm memoria locală
+                    if (!currentTranslationLang) {
+                        originalSegments = JSON.parse(JSON.stringify(result.segments));
+                    } else if (currentTranslationLang) {
+                        multipleTranslations[currentTranslationLang] = JSON.parse(JSON.stringify(result.segments));
+                    }
+
+                    displaySegments(currentSegments);
+                    showToast(result.message, 'success');
+
+                    aiBtn.disabled = false;
+                    aiLoading.style.display = 'none';
+                    aiPrompt.disabled = false;
+                } else if (data.status === 'error') {
+                    throw new Error(data.message || 'Eroare necunoscută în timpul procesării AI');
+                } else {
+                    // Update UI with progress message
+                    if (data.message) {
+                        aiLoading.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${data.message}`;
+                    }
+                    // Poll again
+                    setTimeout(() => pollAITaskStatus(taskId), 2000);
+                }
+            } catch (error) {
+                console.error('Eroare monitorizare AI:', error);
+                showToast('Eroare monitorizare AI: ' + error.message, 'error');
                 aiBtn.disabled = false;
                 aiLoading.style.display = 'none';
                 aiPrompt.disabled = false;
