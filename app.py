@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 # ============================================================
 # Streamlit config (compatibil Streamlit 1.53.1)
@@ -616,8 +616,7 @@ def render_visual(
     hour_hhmm: Optional[str],
 ) -> Image.Image:
     if background_path and background_path.exists():
-        bg = load_rgba(str(background_path)).resize((cfg.w, cfg.h), Image.LANCZOS)
-        canvas = bg.copy()
+        canvas = ImageOps.fit(load_rgba(str(background_path)), (cfg.w, cfg.h), centering=(0.5, 0.5))
     else:
         canvas = Image.new("RGBA", (cfg.w, cfg.h), (0, 0, 0, 0))
 
@@ -892,10 +891,7 @@ with st.sidebar:
     st.session_state["tagline"] = tagline_val
 
     st.subheader(get_text("choose_background"))
-    if st.session_state["graphics_mode"] == get_text("banners"):
-        bg_dir = APP_DIR / "Robert"
-    else:
-        bg_dir = championship_path / "BACKGROUNDS"
+    bg_dir = championship_path / "BACKGROUNDS"
     bgs = list_images(bg_dir)
     if not bgs:
         st.warning(f"{get_text('no_backgrounds')} {bg_dir}")
@@ -1276,10 +1272,7 @@ if not championship_name:
 
 championship_path = CHAMP_DIR / championship_name
 logos_dir = championship_path / "LOGOS TEAM"
-if st.session_state["graphics_mode"] == get_text("banners"):
-    bg_dir = APP_DIR / "Robert"
-else:
-    bg_dir = championship_path / "BACKGROUNDS"
+bg_dir = championship_path / "BACKGROUNDS"
 
 bg_choice = st.session_state.get("bg_choice")
 background_path = (bg_dir / bg_choice) if bg_choice else None
