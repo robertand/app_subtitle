@@ -1317,7 +1317,7 @@ canvas = render_visual(
 
 buf = io.BytesIO()
 canvas.convert("RGB").save(buf, format="JPEG", quality=92)
-st.image(buf.getvalue(), use_container_width=True)
+st.image(buf.getvalue(), use_column_width=True)
 
 # Informații despre export
 if st.session_state.get("export_zip_data"):
