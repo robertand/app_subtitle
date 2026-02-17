@@ -1039,6 +1039,45 @@ def apply_timing_padding(segments, padding=0.5, max_gap=1.5):
             segments[i]['end'] = min(segments[i]['end'] + padding, segments[i+1]['start'])
     return segments
 
+def filter_hallucinations(segments):
+    """
+    Elimină halucinațiile comune ale modelului Whisper (ex: 'Multumim pentru vizionare').
+    Acestea apar de obicei în porțiunile de liniște sau la finalul videoclipului.
+    """
+    if not segments:
+        return segments
+
+    blacklist = [
+        "multumim pentru vizionare",
+        "vă mulțumim pentru vizionare",
+        "vă mulțumesc pentru vizionare",
+        "va multumim pentru vizionare",
+        "multumesc pentru vizionare",
+        "subtitrare realizată de",
+        "vizionare plăcută",
+        "thank you for watching",
+        "thanks for watching"
+    ]
+
+    filtered = []
+    for seg in segments:
+        text = seg['text'].strip().lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+
+        # Dacă textul este în blacklist, îl ignorăm
+        is_hallucination = False
+        for phrase in blacklist:
+            if phrase in text and len(text) < len(phrase) + 5: # Verificăm dacă segmentul este DOAR acea frază (aprox)
+                is_hallucination = True
+                break
+
+        if is_hallucination:
+            print(f"  [Filtru AI] Eliminat segment halucinat: '{seg['text'].strip()}'")
+            continue
+
+        filtered.append(seg)
+
+    return filtered
+
 def deduplicate_segments(segments, threshold=0.85):
     """
     Elimină segmentele consecutive care sunt identice sau foarte similare (bâlbâială Whisper).
@@ -1560,7 +1599,11 @@ def process_large_file(file_path, model_name, language, translation_target,
             # Elimină repetițiile (bâlbâiala Whisper)
             print(f"Aplic deduplicarea segmentelor (inițial: {len(segments)})...")
             segments = deduplicate_segments(segments)
-            print(f"După deduplicare: {len(segments)} segmente.")
+
+            # Filtrează halucinațiile (ex: Multumim pentru vizionare)
+            segments = filter_hallucinations(segments)
+
+            print(f"După procesare: {len(segments)} segmente.")
 
             if should_adjust_segmentation:
                 segments = adjust_segmentation_algorithm(segments)
@@ -1635,7 +1678,7 @@ def process_normal_file(file_path, model, device, language, translation_target,
         'task': 'transcribe',
         'fp16': (device == "cuda"),
         'condition_on_previous_text': False,
-        'no_speech_threshold': 0.5,
+        'no_speech_threshold': 0.7,
         'logprob_threshold': -1.0,
         'word_timestamps': True
     }
@@ -1675,6 +1718,7 @@ def process_normal_file(file_path, model, device, language, translation_target,
         # Post-procesare pentru eliminarea repetițiilor în modul normal
         if 'segments' in result:
             result['segments'] = deduplicate_segments(result['segments'])
+            result['segments'] = filter_hallucinations(result['segments'])
 
     except Exception as e:
         print(f"Eroare la transcriere: {str(e)}")
