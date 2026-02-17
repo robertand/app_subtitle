@@ -381,12 +381,6 @@ def translate_segments(segments, source_lang, target_lang, process_id=None):
             batch = segments[i : i + batch_size]
             current_batch_num = (i // batch_size) + 1
 
-            # Raportăm progresul în statusul task-ului dacă avem un process_id
-            if process_id:
-                progress = int((current_batch_num / total_batches) * 100)
-                update_task_status(process_id, 'processing', progress,
-                                   f'Traducere AI: batch {current_batch_num}/{total_batches}...')
-
             text_to_translate = ""
             for idx, seg in enumerate(batch):
                 # Whisper segments might not have 'id', so we use a relative one if needed
@@ -398,6 +392,7 @@ def translate_segments(segments, source_lang, target_lang, process_id=None):
 
             print(f"🤖 Batch {current_batch_num}/{total_batches} ({len(batch)} segmente)...")
 
+            batch_start = time.time()
             with gpu_processing_lock:
                 response = llm.create_chat_completion(
                     messages=[
@@ -407,8 +402,20 @@ def translate_segments(segments, source_lang, target_lang, process_id=None):
                     temperature=0.2,
                     max_tokens=4096
                 )
+            batch_time = time.time() - batch_start
 
             llm_text = response['choices'][0]['message']['content'].strip()
+
+            # Raportăm progresul și viteza în statusul task-ului dacă avem un process_id
+            if process_id:
+                progress = int((current_batch_num / total_batches) * 100)
+                tokens = response.get('usage', {}).get('completion_tokens', 0)
+                tps = tokens / batch_time if batch_time > 0 else 0
+                llm_mode = "CUDA" if getattr(llm, 'n_gpu_layers', 0) != 0 else "CPU"
+
+                update_task_status(process_id, 'processing', progress,
+                                   f'Traducere AI: batch {current_batch_num}/{total_batches} ({tps:.1f} t/s)...',
+                                   llm_tps=round(tps, 1), llm_mode=llm_mode)
 
             # Parsăm batch-ul tradus
             import re
@@ -533,7 +540,7 @@ def get_process_dir(process_id):
         return None
     return os.path.join(app.config['UPLOAD_FOLDER'], f'process_{safe_id}')
 
-def update_task_status(process_id, status, progress=0, message='', result=None):
+def update_task_status(process_id, status, progress=0, message='', result=None, **kwargs):
     """Actualizează statusul unui task pe disc și în memorie"""
     process_dir = get_process_dir(process_id)
     if not process_dir:
@@ -549,7 +556,8 @@ def update_task_status(process_id, status, progress=0, message='', result=None):
         'message': message,
         'timestamp': datetime.now().isoformat(),
         'last_heartbeat': time.time(),
-        'result': result
+        'result': result,
+        **kwargs
     }
 
     with open(filepath, 'w', encoding='utf-8') as f:
@@ -2605,10 +2613,14 @@ def model_status():
             else:
                 status[model_name] = {'loaded': False}
         
+        llm_mode = "N/A"
+        if llm_instance is not None:
+            llm_mode = "CUDA" if getattr(llm_instance, 'n_gpu_layers', 0) != 0 else "CPU"
+
         translation_status = {
             'mistral-ai': {
                 'loaded': llm_instance is not None,
-                'device': 'cuda' if llm_instance is not None else 'N/A',
+                'device': llm_mode,
                 'source': 'any',
                 'target': 'any'
             }
@@ -3204,10 +3216,6 @@ def background_llm_task(ai_task_id, parent_process_id, prompt, segments, is_tran
             batch = segments[i : i + batch_size]
             current_batch_num = (i // batch_size) + 1
 
-            update_task_status(ai_task_id, 'processing',
-                               int((current_batch_num / total_batches) * 100),
-                               f'AI procesează batch {current_batch_num}/{total_batches}...')
-
             text_to_process = ""
             for seg in batch:
                 text_to_process += f"[{seg['id']}] {seg['text']}\n"
@@ -3216,6 +3224,7 @@ def background_llm_task(ai_task_id, parent_process_id, prompt, segments, is_tran
 
             print(f"🤖 LLM procesează batch {current_batch_num}/{total_batches} ({len(batch)} segmente)...")
 
+            batch_start = time.time()
             with gpu_processing_lock:
                 response = llm.create_chat_completion(
                     messages=[
@@ -3225,8 +3234,19 @@ def background_llm_task(ai_task_id, parent_process_id, prompt, segments, is_tran
                     temperature=0.2,
                     max_tokens=4096
                 )
+            batch_time = time.time() - batch_start
 
             llm_text = response['choices'][0]['message']['content'].strip()
+
+            # Raportăm progresul și viteza
+            progress = int((current_batch_num / total_batches) * 100)
+            tokens = response.get('usage', {}).get('completion_tokens', 0)
+            tps = tokens / batch_time if batch_time > 0 else 0
+            llm_mode = "CUDA" if getattr(llm, 'n_gpu_layers', 0) != 0 else "CPU"
+
+            update_task_status(ai_task_id, 'processing', progress,
+                               f'AI procesează batch {current_batch_num}/{total_batches} ({tps:.1f} t/s)...',
+                               llm_tps=round(tps, 1), llm_mode=llm_mode)
 
             # Parsăm batch-ul curent (mai robust)
             import re

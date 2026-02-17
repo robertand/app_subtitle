@@ -1607,6 +1607,10 @@
                 <i class="fas fa-clock"></i>
                 <span id="timeoutInfo">Timeout: 2 ore</span>
             </div>
+            <div class="info-item">
+                <i class="fas fa-robot"></i>
+                <span id="aiInfo">AI: Mistral Small</span>
+            </div>
         </div>
 
         <!-- Upload and Main Controls (Moved Higher) -->
@@ -2653,6 +2657,19 @@
                         }
                     }
                 }
+
+                // Update AI status
+                const aiInfo = document.getElementById('aiInfo');
+                if (aiInfo && data.translation_status && data.translation_status['mistral-ai']) {
+                    const mistral = data.translation_status['mistral-ai'];
+                    if (mistral.loaded) {
+                        aiInfo.innerHTML = `AI: Mistral (${mistral.device})`;
+                        aiInfo.style.color = mistral.device === 'CUDA' ? '#48bb78' : '#e67e22';
+                    } else {
+                        aiInfo.innerHTML = 'AI: Mistral (Neîncărcat)';
+                        aiInfo.style.color = '#718096';
+                    }
+                }
             } catch (error) {
                 console.error('Eroare la încărcarea statusului:', error);
             }
@@ -3427,9 +3444,13 @@
 
                     // Update progress UI
                     if (data.status === 'processing') {
-                        updateProgress(data.progress || 50, data.message || 'Se procesează...');
+                        let msg = data.message || 'Se procesează...';
+                        if (data.llm_tps) {
+                            msg += ` [${data.llm_tps} t/s | ${data.llm_mode}]`;
+                        }
+                        updateProgress(data.progress || 50, msg);
                         if (uploadStatus) {
-                            uploadStatus.textContent = data.message;
+                            uploadStatus.textContent = msg;
                             uploadStatus.style.color = '#667eea';
                         }
 
@@ -3768,7 +3789,11 @@
                 } else {
                     // Update UI with progress message
                     if (data.message) {
-                        aiLoading.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${data.message}`;
+                        let msg = data.message;
+                        if (data.llm_tps) {
+                            msg += ` <span style="font-size: 0.8em; color: #6366f1;">(${data.llm_tps} t/s | ${data.llm_mode})</span>`;
+                        }
+                        aiLoading.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${msg}`;
                     }
                     // Poll again
                     setTimeout(() => pollAITaskStatus(taskId), 2000);
