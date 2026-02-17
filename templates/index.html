@@ -981,6 +981,22 @@
             line-height: 1.4;
         }
         
+        .delete-segment-btn {
+            color: #e53e3e;
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 2px 5px;
+            border-radius: 4px;
+            transition: all 0.2s;
+            font-size: 0.9em;
+        }
+
+        .delete-segment-btn:hover {
+            background: #fed7d7;
+            transform: scale(1.1);
+        }
+
         .editable-time {
             cursor: text;
             padding: 0 4px;
@@ -3788,6 +3804,28 @@
             }
         }
 
+        // Șterge un segment în memoria locală
+        function deleteSegmentLocal(id) {
+            if (!confirm('Ești sigur că vrei să ștergi acest segment?')) return;
+
+            const index = currentSegments.findIndex(s => s.id === id);
+            if (index !== -1) {
+                currentSegments.splice(index, 1);
+
+                // Actualizăm și originalSegments dacă suntem în modul original
+                if (!currentTranslationLang) {
+                    const origIndex = originalSegments.findIndex(s => s.id === id);
+                    if (origIndex !== -1) originalSegments.splice(origIndex, 1);
+                } else {
+                    // Dacă suntem într-o traducere, poate vrem să ștergem și din original?
+                    // Deocamdată ștergem doar din versiunea curentă
+                }
+
+                displaySegments(currentSegments);
+                showToast('Segment șters local. Nu uita să salvezi!', 'info');
+            }
+        }
+
         // Actualizează un segment în memoria locală
         function updateSegmentLocal(id, field, newValue) {
             const segment = currentSegments.find(s => s.id === id);
@@ -3893,7 +3931,12 @@
                                 →
                                 <span contenteditable="true" class="editable-time" onblur="updateSegmentLocal(${segment.id}, 'end_formatted', this.innerText)">${segment.end_formatted}</span>
                             </span>
-                            ${isTranslated ? `<span class="language-badge target">${targetLang}</span>` : ''}
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                ${isTranslated ? `<span class="language-badge target">${targetLang}</span>` : ''}
+                                <button class="delete-segment-btn" onclick="deleteSegmentLocal(${segment.id})" title="Șterge segmentul">
+                                    <i class="fas fa-trash-alt"></i>
+                                </button>
+                            </div>
                         </div>
                         <div class="segment-text" contenteditable="true" onblur="updateSegmentLocal(${segment.id}, 'text', this.innerText)">${segment.text}</div>
                         ${isTranslated && originalText ? `

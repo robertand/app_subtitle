@@ -69,14 +69,22 @@ def load_llm(model_path=LLM_MODEL_PATH):
 
             print(f"🐘 Se încarcă LLM: {os.path.basename(model_path)}...")
             try:
-                # Configurație optimizată pentru A6000 (48GB VRAM)
+                # Detectăm numărul de core-uri fizice pentru n_threads
+                physical_cores = psutil.cpu_count(logical=False) or 4
+
+                # Configurație optimizată pentru A6000 (48GB VRAM) - ACCELERATĂ
                 llm_instance = Llama(
                     model_path=model_path,
-                    n_gpu_layers=-1, # Toate straturile pe GPU
-                    n_ctx=8192,      # Context generos pentru subtitrări lungi
+                    n_gpu_layers=-1,    # Toate straturile pe GPU
+                    n_ctx=8192,         # Context generos pentru subtitrări lungi
+                    n_batch=512,        # Batch size optim pentru CUDA
+                    n_threads=physical_cores,
+                    n_threads_batch=physical_cores,
+                    offload_kqv=True,   # KV Cache pe GPU
+                    flash_attn=True,    # Atenție accelerată
                     verbose=False
                 )
-                print("✓ LLM încărcat cu succes!")
+                print(f"✓ LLM încărcat cu succes! (accelerare CUDA activă, cores: {physical_cores})")
             except Exception as e:
                 print(f"✗ Eroare la încărcarea LLM: {str(e)}")
                 return None
