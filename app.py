@@ -286,7 +286,7 @@ STANDARD_RESOLUTIONS: List[ResCfg] = [
 
 BANNER_RESOLUTIONS: List[ResCfg] = [
     ResCfg(
-        "BD 1200x1200", 1200, 1200,
+        "BD 1200x1200s", 1200, 1200,
         voyo_xy=(330, 75), voyo_wh=(540, 60),
         teamA_xy=(200, 450), teamB_xy=(700, 450), team_logo_w=300,
         champ_xy=(525, 530), champ_w=150,
@@ -315,7 +315,7 @@ BANNER_RESOLUTIONS: List[ResCfg] = [
     ),
     ResCfg(
         "BD 728x90", 728, 90,
-        voyo_xy=(15, 27), voyo_wh=(240, 27),
+        voyo_xy=(15, 32), voyo_wh=(240, 27),
         teamA_xy=(400, 20), teamB_xy=(550, 20), team_logo_w=50,
         champ_xy=(0, 0), champ_w=0,
         layout_type="SLIM_BANNER"
@@ -331,7 +331,7 @@ BANNER_RESOLUTIONS: List[ResCfg] = [
         "BD 970x250", 970, 250,
         voyo_xy=(20, 40), voyo_wh=(300, 33),
         teamA_xy=(530, 55), teamB_xy=(760, 55), team_logo_w=160,
-        champ_xy=(660, 100), champ_w=60,
+        champ_xy=(850, 100), champ_w=30,
         team_b_auto_scale=1.0,
         layout_type="SIDE_BY_SIDE"
     ),
@@ -660,7 +660,9 @@ def render_visual(
         nameB = teamB_logo_path.stem.upper() if teamB_logo_path else "TEAM B"
         match_txt = f"{nameA} v {nameB}"
 
-        font_size = int(cfg.h * 0.4)
+        # BD 728x90: 1/2 din mărimea actuală (care era 0.4)
+        font_scale = 0.2 if cfg.name == "BD 728x90" else 0.4
+        font_size = int(cfg.h * font_scale)
         font = load_font(font_size, bold=True)
         tw, th = text_size(draw, match_txt, font)
 
@@ -668,8 +670,14 @@ def render_visual(
         tx = cfg.w - tw - 20
         ty = cfg.teamA_xy[1]
 
+        # Ajustări înălțime
+        if cfg.name == "BD 970x90":
+            ty -= 20
+        elif cfg.name == "BD 728x90":
+            ty -= 15
+
         draw.text((tx, ty), match_txt, font=font, fill=(255, 255, 255, 255))
-        y_base_after_logos = ty + th + 5
+        y_base_after_logos = ty + th + 2
     else:
         # Echipa A
         if teamA_logo_path and teamA_logo_path.exists():
@@ -724,7 +732,9 @@ def render_visual(
     if chosen_date:
         date_txt = fmt_ro_date(chosen_date)
         date_font_px = max(10, cfg.voyo_wh[1])
-        if cfg.layout_type in ["SLIM_BANNER", "SIDE_BY_SIDE"]:
+        if cfg.layout_type == "SIDE_BY_SIDE":
+            date_font_px = int(cfg.h * 0.21)
+        elif cfg.layout_type == "SLIM_BANNER":
             date_font_px = int(cfg.h * 0.3)
 
         date_font = load_font(date_font_px, bold=True)
@@ -738,9 +748,10 @@ def render_visual(
         if "BD" in cfg.name and cfg.w >= 1000 and cfg.h >= 1000:
             y_base += 100
 
-        # Cerință specifică: mutăm în sus pentru 1200x628
-        if cfg.name == "BD 1200x628":
-            y_base -= 80
+
+        # Mai jos cu 3 randuri
+        if cfg.name in ["BD 960 x 1200", "SM 1080x1350", "SM 1080x1920"]:
+            y_base += 150
 
         if cfg.layout_type == "SIDE_BY_SIDE":
             # 970x250 layout: Voyo top-left, Date below it, Hour below date
@@ -754,16 +765,13 @@ def render_visual(
                 _, th = text_size(draw, date_txt, date_font)
                 draw.text((tx, ty + th + 10), hour_txt, font=hour_font, fill=(255, 255, 255, 255))
         elif cfg.layout_type == "SLIM_BANNER":
-            # Slim banner: aliniere dreapta sub textul meciului
-            tw, th = text_size(draw, date_txt, date_font)
-            tx = cfg.w - tw - 20
-            draw.text((tx, y_base), date_txt, font=date_font, fill=(255, 255, 255, 255))
+            # Slim banner: aliniere dreapta, Data și Ora pe același rând
+            sep = "  " if cfg.name == "BD 970x90" else " "
+            full_date_txt = f"{date_txt}{sep}ORA {hour_hhmm}" if hour_hhmm else date_txt
 
-            if hour_hhmm:
-                hour_txt = f"ORA {hour_hhmm}"
-                hour_font = load_font(date_font_px, bold=True)
-                hw, _ = text_size(draw, hour_txt, hour_font)
-                draw.text((cfg.w - hw - 20, y_base + th + 5), hour_txt, font=hour_font, fill=(255, 255, 255, 255))
+            tw, th = text_size(draw, full_date_txt, date_font)
+            tx = cfg.w - tw - 20
+            draw.text((tx, y_base), full_date_txt, font=date_font, fill=(255, 255, 255, 255))
         else:
             cx = cfg.w / 2
             # 1920 x 800: mutat la dreapta cu +400 total
@@ -906,7 +914,7 @@ with st.sidebar:
         with col1:
             voyo_w_scale = st.slider("Voyo W Scale", 0.1, 3.0, 1.0, 0.05)
         with col2:
-            voyo_h_scale = st.slider("Voyo H Scale", 0.1, 3.0, 1.0, 0.05)
+            voyo_h_scale = st.slider("Voyo H Scale", 0.1, 3.0, 0.90, 0.05)
 
     st.subheader(get_text("choose_championship"))
     champs = sorted(list_dirs(CHAMP_DIR))
@@ -1298,6 +1306,7 @@ nav_col1, nav_col2, nav_col3 = st.columns([1, 3, 1], gap="small")
 with nav_col1:
     if st.button(get_text("nav_left"), key="nav_left"):
         st.session_state["preview_idx"] = (st.session_state["preview_idx"] - 1) % len(selected_res)
+        st.rerun()
 
 with nav_col2:
     label = f"{selected_res[st.session_state['preview_idx']]} | {st.session_state['preview_idx'] + 1} / {len(selected_res)}"
@@ -1309,6 +1318,7 @@ with nav_col2:
 with nav_col3:
     if st.button(get_text("nav_right"), key="nav_right"):
         st.session_state["preview_idx"] = (st.session_state["preview_idx"] + 1) % len(selected_res)
+        st.rerun()
 
 current_res_name = selected_res[st.session_state["preview_idx"]]
 current_cfg = RES_BY_NAME[current_res_name]
