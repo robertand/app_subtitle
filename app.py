@@ -159,12 +159,10 @@ def create_language_selector():
             col1, col2 = st.columns(2)
             with col1:
                 ro_selected = st.button("RO", key="btn_ro",
-                                      type="primary" if current_lang == "RO" else "secondary",
-                                      use_column_width=True)
+                                      type="primary" if current_lang == "RO" else "secondary")
             with col2:
                 en_selected = st.button("EN", key="btn_en",
-                                      type="primary" if current_lang == "EN" else "secondary",
-                                      use_column_width=True)
+                                      type="primary" if current_lang == "EN" else "secondary")
             
             # Verifică care buton a fost apăsat
             if ro_selected and current_lang != "RO":
@@ -1120,7 +1118,7 @@ with st.sidebar:
     st.subheader("📁 MANAGEMENT FIȘIERE")
     
     # Buton Refresh Directoare
-    if st.button(get_text("refresh_dirs"), key="btn_refresh_dirs", use_column_width=True):
+    if st.button(get_text("refresh_dirs"), key="btn_refresh_dirs"):
         refresh_directories()
     
     st.markdown("---")
@@ -1215,7 +1213,7 @@ with st.sidebar:
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button(get_text("export"), key="btn_export_generate", use_column_width=True):
+        if st.button(get_text("export"), key="btn_export_generate"):
             # Generează imagini și creează ZIP în memorie
             teamA_name = safe_name(st.session_state.get("global_teamA_logo") or "TeamA")
             teamB_name = safe_name(st.session_state.get("global_teamB_logo") or "TeamB")
@@ -1283,8 +1281,7 @@ with st.sidebar:
                 data=st.session_state["export_zip_data"],
                 file_name=st.session_state.get("export_zip_name", "vizuale_fotbal.zip"),
                 mime="application/zip",
-                key="btn_download_zip",
-                use_column_width=True
+                key="btn_download_zip"
             )
 
 # -----------------------
@@ -1299,7 +1296,7 @@ if st.session_state["preview_idx"] >= len(selected_res):
 
 nav_col1, nav_col2, nav_col3 = st.columns([1, 3, 1], gap="small")
 with nav_col1:
-    if st.button(get_text("nav_left"), key="nav_left", use_column_width=True):
+    if st.button(get_text("nav_left"), key="nav_left"):
         st.session_state["preview_idx"] = (st.session_state["preview_idx"] - 1) % len(selected_res)
 
 with nav_col2:
@@ -1310,7 +1307,7 @@ with nav_col2:
     )
 
 with nav_col3:
-    if st.button(get_text("nav_right"), key="nav_right", use_column_width=True):
+    if st.button(get_text("nav_right"), key="nav_right"):
         st.session_state["preview_idx"] = (st.session_state["preview_idx"] + 1) % len(selected_res)
 
 current_res_name = selected_res[st.session_state["preview_idx"]]
