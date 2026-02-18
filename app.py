@@ -160,11 +160,11 @@ def create_language_selector():
             with col1:
                 ro_selected = st.button("RO", key="btn_ro",
                                       type="primary" if current_lang == "RO" else "secondary",
-                                      use_container_width=True)
+                                      use_column_width=True)
             with col2:
                 en_selected = st.button("EN", key="btn_en",
                                       type="primary" if current_lang == "EN" else "secondary",
-                                      use_container_width=True)
+                                      use_column_width=True)
             
             # Verifică care buton a fost apăsat
             if ro_selected and current_lang != "RO":
@@ -296,9 +296,9 @@ BANNER_RESOLUTIONS: List[ResCfg] = [
     ),
     ResCfg(
         "BD 1200x628", 1200, 628,
-        voyo_xy=(437, 74), voyo_wh=(326, 36),
-        teamA_xy=(237, 330), teamB_xy=(723, 330), team_logo_w=240,
-        champ_xy=(540, 380), champ_w=120,
+        voyo_xy=(437, 24), voyo_wh=(326, 36),
+        teamA_xy=(237, 250), teamB_xy=(723, 250), team_logo_w=240,
+        champ_xy=(540, 300), champ_w=120,
         team_b_auto_scale=1.0
     ),
     ResCfg(
@@ -614,6 +614,8 @@ def render_visual(
     teamB_dy: int,
     chosen_date: Optional[date],
     hour_hhmm: Optional[str],
+    voyo_w_scale: float = 1.0,
+    voyo_h_scale: float = 1.0,
 ) -> Image.Image:
     if background_path and background_path.exists():
         canvas = ImageOps.fit(load_rgba(str(background_path)), (cfg.w, cfg.h), centering=(0.5, 0.5))
@@ -625,12 +627,14 @@ def render_visual(
     # VOYO
     voyo_h = cfg.voyo_wh[1]
     if voyo_on and VOYO_PATH.exists():
-        voyo = load_rgba(str(VOYO_PATH)).resize(cfg.voyo_wh, Image.LANCZOS)
+        new_wh = (int(cfg.voyo_wh[0] * voyo_w_scale), int(cfg.voyo_wh[1] * voyo_h_scale))
+        voyo = load_rgba(str(VOYO_PATH)).resize(new_wh, Image.LANCZOS)
         paste_rgba(canvas, voyo, cfg.voyo_xy)
 
     # TAGLINE (max 2 linii, centrat sub VOYO)
     tagline = (tagline or "").strip()
-    if tagline:
+    # Skip tagline for narrow/special layouts
+    if tagline and cfg.layout_type not in ["SLIM_BANNER", "SIDE_BY_SIDE"]:
         base_font_px = int(round(voyo_h * 1.20))
         max_w = cfg.w - 80
         font, lines = fit_tagline(draw, tagline, base_font_px, max_w)
@@ -662,11 +666,11 @@ def render_visual(
         font = load_font(font_size, bold=True)
         tw, th = text_size(draw, match_txt, font)
 
-        # Centrat în zona logo-urilor (între teamA_xy și teamB_xy sau centrat pe w)
-        tx = (cfg.teamA_xy[0] + cfg.teamB_xy[0]) / 2 if cfg.teamB_xy[0] > 0 else cfg.w / 2
+        # Aliniere dreapta pentru text in slim banner
+        tx = cfg.w - tw - 20
         ty = cfg.teamA_xy[1]
 
-        draw.text((tx - tw / 2, ty), match_txt, font=font, fill=(255, 255, 255, 255))
+        draw.text((tx, ty), match_txt, font=font, fill=(255, 255, 255, 255))
         y_base_after_logos = ty + th + 5
     else:
         # Echipa A
@@ -722,7 +726,7 @@ def render_visual(
     if chosen_date:
         date_txt = fmt_ro_date(chosen_date)
         date_font_px = max(10, cfg.voyo_wh[1])
-        if cfg.layout_type == "SLIM_BANNER":
+        if cfg.layout_type in ["SLIM_BANNER", "SIDE_BY_SIDE"]:
             date_font_px = int(cfg.h * 0.3)
 
         date_font = load_font(date_font_px, bold=True)
@@ -732,19 +736,50 @@ def render_visual(
         if cfg.name == "1000 x 563":
             y_base -= 30
 
-        cx = cfg.w / 2
-        # 1920 x 800: mutat la dreapta cu +400 total
-        if cfg.name == "1920 x 800":
-            cx += 400
+        # Mărim Y pentru rezoluții pătrate/mari (Bannere)
+        if "BD" in cfg.name and cfg.w >= 1000 and cfg.h >= 1000:
+            y_base += 100
 
-        tw, th = text_size(draw, date_txt, date_font)
-        draw.text((cx - tw / 2, y_base), date_txt, font=date_font, fill=(255, 255, 255, 255))
+        # Cerință specifică: mutăm în sus pentru 1200x628
+        if cfg.name == "BD 1200x628":
+            y_base -= 80
 
-        if hour_hhmm:
-            hour_txt = f"ORA {hour_hhmm}"
-            hour_font = load_font(max(10, int(round(date_font_px * 0.85))), bold=True)
-            hw, _ = text_size(draw, hour_txt, hour_font)
-            draw.text((cx - hw / 2, y_base + th + 10), hour_txt, font=hour_font, fill=(255, 255, 255, 255))
+        if cfg.layout_type == "SIDE_BY_SIDE":
+            # 970x250 layout: Voyo top-left, Date below it, Hour below date
+            tx = cfg.voyo_xy[0]
+            ty = cfg.voyo_xy[1] + int(cfg.voyo_wh[1] * voyo_h_scale) + 20
+            draw.text((tx, ty), date_txt, font=date_font, fill=(255, 255, 255, 255))
+
+            if hour_hhmm:
+                hour_txt = f"ORA {hour_hhmm}"
+                hour_font = load_font(date_font_px, bold=True)
+                _, th = text_size(draw, date_txt, date_font)
+                draw.text((tx, ty + th + 10), hour_txt, font=hour_font, fill=(255, 255, 255, 255))
+        elif cfg.layout_type == "SLIM_BANNER":
+            # Slim banner: aliniere dreapta sub textul meciului
+            tw, th = text_size(draw, date_txt, date_font)
+            tx = cfg.w - tw - 20
+            draw.text((tx, y_base), date_txt, font=date_font, fill=(255, 255, 255, 255))
+
+            if hour_hhmm:
+                hour_txt = f"ORA {hour_hhmm}"
+                hour_font = load_font(date_font_px, bold=True)
+                hw, _ = text_size(draw, hour_txt, hour_font)
+                draw.text((cfg.w - hw - 20, y_base + th + 5), hour_txt, font=hour_font, fill=(255, 255, 255, 255))
+        else:
+            cx = cfg.w / 2
+            # 1920 x 800: mutat la dreapta cu +400 total
+            if cfg.name == "1920 x 800":
+                cx += 400
+
+            tw, th = text_size(draw, date_txt, date_font)
+            draw.text((cx - tw / 2, y_base), date_txt, font=date_font, fill=(255, 255, 255, 255))
+
+            if hour_hhmm:
+                hour_txt = f"ORA {hour_hhmm}"
+                hour_font = load_font(max(10, int(round(date_font_px * 0.85))), bold=True)
+                hw, _ = text_size(draw, hour_txt, hour_font)
+                draw.text((cx - hw / 2, y_base + th + 10), hour_txt, font=hour_font, fill=(255, 255, 255, 255))
 
     return canvas
 
@@ -803,6 +838,11 @@ def date_mode_callback():
         st.session_state["chosen_date"] = None
 
 
+def res_checkbox_callback():
+    """Callback pentru schimbarea rezoluțiilor"""
+    st.session_state["preview_idx"] = 0
+
+
 # ============================================================
 # UI
 # ============================================================
@@ -847,6 +887,7 @@ with st.sidebar:
     )
     if graphics_mode != st.session_state.get("graphics_mode"):
         st.session_state["graphics_mode"] = graphics_mode
+        st.session_state["preview_idx"] = 0
         st.rerun()
 
     st.subheader(get_text("voyo_exclusive"))
@@ -859,6 +900,15 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     st.session_state["voyo_choice"] = voyo_choice
+
+    voyo_w_scale = 1.0
+    voyo_h_scale = 1.0
+    if st.session_state["graphics_mode"] == get_text("banners") and voyo_choice == get_text("yes"):
+        col1, col2 = st.columns(2)
+        with col1:
+            voyo_w_scale = st.slider("Voyo W Scale", 0.1, 3.0, 1.0, 0.05)
+        with col2:
+            voyo_h_scale = st.slider("Voyo H Scale", 0.1, 3.0, 1.0, 0.05)
 
     st.subheader(get_text("choose_championship"))
     champs = sorted(list_dirs(CHAMP_DIR))
@@ -914,6 +964,7 @@ with st.sidebar:
             r.name,
             value=st.session_state["res_selected"].get(r.name, True),
             key=f"chk_{r.name}",
+            on_change=res_checkbox_callback
         )
 
     selected_res = get_selected_res()
@@ -984,7 +1035,7 @@ with st.sidebar:
                 key=f"teamA_scale_{current_res_name}",
             )
             cur["teamA_scale"] = teamA_scale
-            
+
         with col2:
             teamA_dx = st.number_input(
                 get_text("x_offset"),
@@ -993,7 +1044,7 @@ with st.sidebar:
                 key=f"teamA_dx_{current_res_name}",
             )
             cur["teamA_dx"] = teamA_dx
-            
+
         teamA_dy = st.number_input(
             f"{get_text('y_offset')} ({get_text('team_a')})",
             value=int(cur.get("teamA_dy", 0)),
@@ -1069,7 +1120,7 @@ with st.sidebar:
     st.subheader("📁 MANAGEMENT FIȘIERE")
     
     # Buton Refresh Directoare
-    if st.button(get_text("refresh_dirs"), key="btn_refresh_dirs", use_container_width=True):
+    if st.button(get_text("refresh_dirs"), key="btn_refresh_dirs", use_column_width=True):
         refresh_directories()
     
     st.markdown("---")
@@ -1094,7 +1145,7 @@ with st.sidebar:
                 refresh_directories()
         else:
             st.warning("Selectează un campionat înainte de upload")
-    
+
     # Upload Logo Echipa B
     st.markdown(f"**{get_text('upload_logo_b')}**")
     uploaded_file_b = st.file_uploader(
@@ -1103,7 +1154,7 @@ with st.sidebar:
         key="upload_logo_b",
         label_visibility="collapsed"
     )
-    
+
     if uploaded_file_b is not None:
         # Verifică dacă există un campionat selectat
         if championship_name:
@@ -1115,7 +1166,7 @@ with st.sidebar:
                 refresh_directories()
         else:
             st.warning("Selectează un campionat înainte de upload")
-    
+
     st.divider()
     # ============================================================
     # Sfârșit butoane noi
@@ -1164,7 +1215,7 @@ with st.sidebar:
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button(get_text("export"), key="btn_export_generate", use_container_width=True):
+        if st.button(get_text("export"), key="btn_export_generate", use_column_width=True):
             # Generează imagini și creează ZIP în memorie
             teamA_name = safe_name(st.session_state.get("global_teamA_logo") or "TeamA")
             teamB_name = safe_name(st.session_state.get("global_teamB_logo") or "TeamB")
@@ -1205,6 +1256,8 @@ with st.sidebar:
                         teamB_dy=int(per.get("teamB_dy", 0)),
                         chosen_date=chosen_date if isinstance(chosen_date, date) else None,
                         hour_hhmm=hour_ok,
+                        voyo_w_scale=voyo_w_scale,
+                        voyo_h_scale=voyo_h_scale,
                     )
 
                     # Salvează imaginea în BytesIO
@@ -1231,7 +1284,7 @@ with st.sidebar:
                 file_name=st.session_state.get("export_zip_name", "vizuale_fotbal.zip"),
                 mime="application/zip",
                 key="btn_download_zip",
-                use_container_width=True
+                use_column_width=True
             )
 
 # -----------------------
@@ -1246,7 +1299,7 @@ if st.session_state["preview_idx"] >= len(selected_res):
 
 nav_col1, nav_col2, nav_col3 = st.columns([1, 3, 1], gap="small")
 with nav_col1:
-    if st.button(get_text("nav_left"), key="nav_left", use_container_width=True):
+    if st.button(get_text("nav_left"), key="nav_left", use_column_width=True):
         st.session_state["preview_idx"] = (st.session_state["preview_idx"] - 1) % len(selected_res)
 
 with nav_col2:
@@ -1257,7 +1310,7 @@ with nav_col2:
     )
 
 with nav_col3:
-    if st.button(get_text("nav_right"), key="nav_right", use_container_width=True):
+    if st.button(get_text("nav_right"), key="nav_right", use_column_width=True):
         st.session_state["preview_idx"] = (st.session_state["preview_idx"] + 1) % len(selected_res)
 
 current_res_name = selected_res[st.session_state["preview_idx"]]
@@ -1306,6 +1359,8 @@ canvas = render_visual(
     teamB_dy=int(cur.get("teamB_dy", 0)),
     chosen_date=chosen_date if isinstance(chosen_date, date) else None,
     hour_hhmm=hour_ok,
+    voyo_w_scale=voyo_w_scale,
+    voyo_h_scale=voyo_h_scale,
 )
 
 buf = io.BytesIO()
