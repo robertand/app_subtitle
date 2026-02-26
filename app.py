@@ -1,6 +1,8 @@
 import os
 import tempfile
 import whisper
+import zipfile
+import io
 from flask import Flask, render_template, request, jsonify, send_file, session
 from werkzeug.utils import secure_filename
 import json
@@ -13,11 +15,14 @@ import psutil
 import uuid
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, MarianMTModel, MarianTokenizer
+from deep_translator import GoogleTranslator
 import shutil
 from pathlib import Path
 import hashlib
 import math
 import traceback
+from collections import Counter
+from llama_cpp import Llama
 
 # Configurare director de date local
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
@@ -47,7 +52,68 @@ upload_lock = threading.Lock()
 
 # Managementul task-urilor în background
 processing_tasks = {}
+
+# Instanță globală LLM
+llm_instance = None
+llm_lock = threading.Lock()
+LLM_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf')
+
+def load_llm(model_path=LLM_MODEL_PATH):
+    """Încarcă modelul LLM folosind llama-cpp-python"""
+    global llm_instance
+    with llm_lock:
+        if llm_instance is None:
+            if not os.path.exists(model_path):
+                print(f"⚠️ Modelul LLM nu a fost găsit la: {model_path}")
+                return None
+
+            print(f"🐘 Se încarcă LLM: {os.path.basename(model_path)}...")
+            try:
+                # Detectăm numărul de core-uri fizice pentru n_threads
+                physical_cores = psutil.cpu_count(logical=False) or 4
+
+                # Configurație optimizată pentru A6000 (48GB VRAM) - ACCELERATĂ
+                llm_instance = Llama(
+                    model_path=model_path,
+                    n_gpu_layers=-1,    # Toate straturile pe GPU
+                    n_ctx=8192,         # Context generos pentru subtitrări lungi
+                    n_batch=512,        # Batch size optim pentru CUDA
+                    n_threads=physical_cores,
+                    n_threads_batch=physical_cores,
+                    offload_kqv=True,   # KV Cache pe GPU
+                    flash_attn=True,    # Atenție accelerată
+                    verbose=False
+                )
+                print(f"✓ LLM încărcat cu succes! (accelerare CUDA activă, cores: {physical_cores})")
+            except Exception as e:
+                print(f"✗ Eroare la încărcarea LLM: {str(e)}")
+                return None
+        return llm_instance
+
+# Lock pentru procesare GPU (pentru a evita supraîncărcarea memoriei video)
+gpu_processing_lock = threading.RLock()
 tasks_lock = threading.Lock()
+
+# Cache pentru suport hardware
+_hardware_caps = {
+    'nvenc': None
+}
+_caps_lock = threading.Lock()
+
+def is_nvenc_available():
+    """Verifică dacă h264_nvenc este disponibil în FFmpeg"""
+    global _hardware_caps
+    with _caps_lock:
+        if _hardware_caps['nvenc'] is not None:
+            return _hardware_caps['nvenc']
+
+        try:
+            result = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, timeout=5)
+            _hardware_caps['nvenc'] = 'h264_nvenc' in result.stdout
+        except:
+            _hardware_caps['nvenc'] = False
+
+        return _hardware_caps['nvenc']
 
 # Opțiuni modele disponibile
 AVAILABLE_MODELS = {
@@ -96,46 +162,8 @@ SUPPORTED_LANGUAGES = {
     'uk': 'Ucraineană'
 }
 
-# Modele de traducere mai bune (NLLB-200 pentru traduceri multilingve de calitate)
-TRANSLATION_MODELS_CONFIG = {
-    # Model NLLB-200 (No Language Left Behind) - 200 de limbi, calitate bună
-    'nllb': {
-        'name': 'facebook/nllb-200-distilled-600M',
-        'display_name': 'NLLB-200 (Multilingv, 600M)',
-        'languages': {
-            'en': 'eng_Latn', 'ro': 'ron_Latn', 'fr': 'fra_Latn', 'de': 'deu_Latn',
-            'es': 'spa_Latn', 'it': 'ita_Latn', 'ru': 'rus_Cyrl', 'zh': 'zho_Hans',
-            'ja': 'jpn_Jpan', 'ko': 'kor_Hang', 'ar': 'ara_Arab', 'hi': 'hin_Deva',
-            'pt': 'por_Latn', 'nl': 'nld_Latn', 'pl': 'pol_Latn', 'tr': 'tur_Latn',
-            'sv': 'swe_Latn', 'da': 'dan_Latn', 'fi': 'fin_Latn', 'no': 'nob_Latn',
-            'cs': 'ces_Latn', 'hu': 'hun_Latn', 'bg': 'bul_Cyrl', 'el': 'ell_Grek',
-            'uk': 'ukr_Cyrl', 'vi': 'vie_Latn', 'th': 'tha_Thai', 'he': 'heb_Hebr',
-            'id': 'ind_Latn', 'ms': 'zsm_Latn', 'fa': 'pes_Arab', 'ur': 'urd_Arab',
-            'sw': 'swh_Latn', 'sk': 'slk_Latn', 'sl': 'slv_Latn'
-        }
-    },
-    # Modele MarianMT (specifice perechilor de limbi) - calitate foarte bună pentru perechile specifice
-    'marian': {
-        'models': {
-            'en-ro': 'Helsinki-NLP/opus-mt-en-ro',
-            # 'ro-en' nu există ca model separat, folosim NLLB-200 pentru traducerea inversă
-            'en-fr': 'Helsinki-NLP/opus-mt-en-fr',
-            'fr-en': 'Helsinki-NLP/opus-mt-fr-en',
-            'en-de': 'Helsinki-NLP/opus-mt-en-de',
-            'de-en': 'Helsinki-NLP/opus-mt-de-en',
-            'en-es': 'Helsinki-NLP/opus-mt-en-es',
-            'es-en': 'Helsinki-NLP/opus-mt-es-en',
-            'en-it': 'Helsinki-NLP/opus-mt-en-it',
-            'it-en': 'Helsinki-NLP/opus-mt-it-en',
-            'en-ru': 'Helsinki-NLP/opus-mt-en-ru',
-            'ru-en': 'Helsinki-NLP/opus-mt-ru-en',
-            'en-sk': 'Helsinki-NLP/opus-mt-en-sk',
-            'sk-en': 'Helsinki-NLP/opus-mt-sk-en',
-            'en-sl': 'Helsinki-NLP/opus-mt-en-sl',
-            'sl-en': 'Helsinki-NLP/opus-mt-sl-en',
-        }
-    }
-}
+# Configurare traducere (Mistral LLM)
+# Înlocuiește vechiul sistem TRANSLATION_MODELS_CONFIG
 
 # Limbi pentru traducere cu etichete ușor de înțeles
 TRANSLATION_LANGUAGES = {
@@ -232,308 +260,245 @@ def load_model(model_name=DEFAULT_MODEL):
                         
         return loaded_models[model_name]
 
-def load_translation_model(source_lang, target_lang):
-    """Încarcă modelul de traducere pentru o pereche de limbi"""
-    global translation_models
-    
-    model_key = f"{source_lang}-{target_lang}"
-    
-    with translation_lock:
-        if model_key in translation_models:
-            return translation_models[model_key]
-        
-        print(f"Se încarcă modelul de traducere: {source_lang}->{target_lang}...")
-        start_time = time.time()
-        
-        try:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            
-            # MODELE SPECIFICE PENTRU FIECARE PERECHE
-            model_map = TRANSLATION_MODELS_CONFIG['marian']['models'].copy()
-            # Mapare specială pentru Romanian -> English (ROMANCE-en include ro)
-            if 'ro-en' not in model_map:
-                model_map['ro-en'] = 'Helsinki-NLP/opus-mt-ROMANCE-en'
-            
-            if model_key in model_map:
-                model_name = model_map[model_key]
-                print(f"Încarc modelul Opus-MT: {model_name}")
-                
-                tokenizer = MarianTokenizer.from_pretrained(model_name)
-                model = MarianMTModel.from_pretrained(model_name).to(device)
-                model_type = 'marian'
-            else:
-                # Fallback la NLLB-200 (mai modern și suportă mai multe limbi)
-                model_name = TRANSLATION_MODELS_CONFIG['nllb']['name']
-                print(f"Încarc modelul NLLB-200: {model_name}")
-                
-                tokenizer = AutoTokenizer.from_pretrained(model_name)
-                model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
-                model_type = 'nllb'
-            
-            load_time = time.time() - start_time
-            
-            translation_models[model_key] = {
-                'model': model,
-                'tokenizer': tokenizer,
-                'device': device,
-                'load_time': load_time,
-                'source': source_lang,
-                'target': target_lang,
-                'model_name': model_name,
-                'model_type': model_type
-            }
-            
-            print(f"✓ Model traducere {model_key} încărcat în {load_time:.1f} secunde pe {device}")
-            return translation_models[model_key]
-            
-        except Exception as e:
-            print(f"✗ Eroare la încărcarea modelului de traducere: {str(e)}")
-            
-            # Fallback: încercă să încarce pe CPU
-            try:
-                print("Încerc încărcare pe CPU...")
-                device = "cpu"
-                
-                if model_key in model_map:
-                    model_name = model_map[model_key]
-                    tokenizer = MarianTokenizer.from_pretrained(model_name)
-                    model = MarianMTModel.from_pretrained(model_name).to(device)
-                    model_type = 'marian'
-                else:
-                    model_name = TRANSLATION_MODELS_CONFIG['nllb']['name']
-                    tokenizer = AutoTokenizer.from_pretrained(model_name)
-                    model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
-                    model_type = 'nllb'
-                
-                translation_models[model_key] = {
-                    'model': model,
-                    'tokenizer': tokenizer,
-                    'device': device,
-                    'load_time': time.time() - start_time,
-                    'source': source_lang,
-                    'target': target_lang,
-                    'model_name': model_name,
-                    'model_type': model_type
-                }
-                
-                print(f"✓ Model traducere {model_key} încărcat pe CPU")
-                return translation_models[model_key]
-                
-            except Exception as e2:
-                print(f"✗ Eroare critică la încărcarea modelului: {str(e2)}")
-                return None
+# Vechiul sistem de traducere MarianMT/NLLB a fost înlocuit cu Mistral LLM
+# Funcțiile load_translation_model și translate_segment_batch au fost eliminate.
 
-def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
-    """Traduce un batch de segmente păstrând timecode-ul"""
-    if not segments or source_lang == target_lang:
+def translate_multilingual_segments(segments, target_lang, process_id=None):
+    """
+    Traduce segmente care pot fi în mai multe limbi sursă.
+    Detectează automat limba fiecărui segment și folosește modelul potrivit.
+    """
+    if not segments:
         return segments
-    
-    try:
-        # Încarcă modelul de traducere
-        model_data = load_translation_model(source_lang, target_lang)
-        
-        if not model_data:
-            print(f"✗ Nu există model de traducere pentru {source_lang}->{target_lang}")
-            return segments
-        
-        model = model_data['model']
-        tokenizer = model_data['tokenizer']
-        device = model_data['device']
-        model_type = model_data['model_type']
-        
-        translated_segments = []
-        
-        for i in range(0, len(segments), batch_size):
-            batch = segments[i:i+batch_size]
-            batch_texts = [seg['text'] for seg in batch]
-            
+
+    print(f"🌍 Traducere multilingvă către {target_lang}...")
+    print(f"  Segmente totale: {len(segments)}")
+
+    translated_segments = []
+    language_groups = {}
+
+    # Grupăm segmentele după limba sursă
+    for seg in segments:
+        # Prioritate: detected_language (pus de noi), apoi language (pus de Whisper), apoi default 'en'
+        source_lang = seg.get('detected_language') or seg.get('language') or 'en'
+        if source_lang not in language_groups:
+            language_groups[source_lang] = []
+        language_groups[source_lang].append(seg)
+
+    print(f"  Limbi detectate în segmente: {list(language_groups.keys())}")
+
+    # Traducem fiecare grup în parte
+    for source_lang, group_segments in language_groups.items():
+        if source_lang == target_lang:
+            # Nu traducem dacă e aceeași limbă
+            print(f"  ⏭️  Păstrez {len(group_segments)} segmente în {source_lang} (aceeași limbă)")
+            for seg in group_segments:
+                translated_seg = seg.copy()
+                translated_seg['original'] = False
+                translated_seg['target_language'] = target_lang
+                translated_seg['source_language'] = source_lang
+                translated_segments.append(translated_seg)
+        else:
+            # Traducem din source_lang în target_lang
+            print(f"  🔄 Traduc {len(group_segments)} segmente din {source_lang} în {target_lang}...")
+
+            # Pregătim segmentele pentru traducere
+            whisper_segments = []
+            for seg in group_segments:
+                whisper_segments.append({
+                    'start': seg['start'],
+                    'end': seg['end'],
+                    'text': seg['text']
+                })
+
             try:
-                if model_type == 'marian':
-                    # MarianMT/Opus-MT - direct translation
-                    inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
-                    translated = model.generate(**inputs, max_length=512, num_beams=4, early_stopping=True)
-                    translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
-                    
-                elif model_type == 'nllb':
-                    # NLLB-200
-                    src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
-                    tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
+                translated = translate_segments(whisper_segments, source_lang, target_lang)
 
-                    if hasattr(tokenizer, 'src_lang'):
-                        tokenizer.src_lang = src_code
+                for i, seg in enumerate(translated):
+                    translated_seg = group_segments[i].copy()
+                    translated_seg['text'] = seg['text']
+                    translated_seg['original'] = False
+                    translated_seg['target_language'] = target_lang
+                    translated_seg['source_language'] = source_lang
+                    translated_segments.append(translated_seg)
 
-                    forced_bos_token_id = None
-                    try:
-                        if hasattr(tokenizer, 'get_lang_id'):
-                            forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
-                        elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
-                            forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
-                    except:
-                        pass
-
-                    inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
-                    
-                    gen_kwargs = {"max_length": 512, "num_beams": 4, "early_stopping": True}
-                    if forced_bos_token_id is not None:
-                        gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
-
-                    translated = model.generate(**inputs, **gen_kwargs)
-                    translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
-                
-                else:
-                    # Fallback pentru alte modele
-                    translated_texts = batch_texts
-                
-                # Creează segmentele traduse cu timecode-uri originale
-                for j, seg in enumerate(batch):
-                    if j < len(translated_texts):
-                        translated_seg = seg.copy()
-                        translated_seg['text'] = translated_texts[j].strip()
-                        translated_segments.append(translated_seg)
-                    else:
-                        # Fallback: păstrează textul original
-                        translated_segments.append(seg)
-                        
             except Exception as e:
-                print(f"Eroare la traducerea batch-ului {i}: {str(e)}")
-                # În caz de eroare, păstrează segmentele originale
-                translated_segments.extend(batch)
-        
-        return translated_segments
-        
-    except Exception as e:
-        print(f"✗ Eroare la traducere: {str(e)}")
-        return segments
+                print(f"  ❌ Eroare la traducere din {source_lang}: {str(e)}")
+                # Fallback: păstrăm originalul
+                for seg in group_segments:
+                    translated_seg = seg.copy()
+                    translated_seg['original'] = False
+                    translated_seg['target_language'] = target_lang
+                    translated_seg['source_language'] = source_lang
+                    translated_segments.append(translated_seg)
 
-def translate_segments(segments, source_lang, target_lang):
-    """Traduce toate segmentele păstrând timecode-ul și structura"""
+    # Sortăm după timp
+    translated_segments.sort(key=lambda x: x['start'])
+
+    return translated_segments
+
+def translate_segments(segments, source_lang, target_lang, process_id=None):
+    """
+    Traduce segmentele folosind modelul Mistral (LLM).
+    Înlocuiește vechiul sistem MarianMT/NLLB.
+    """
     if not segments or source_lang == target_lang:
         return segments
-    
-    print(f"Încep traducerea din {source_lang} în {target_lang}...")
-    print(f"Număr segmente: {len(segments)}")
+
+    print(f"🤖 Traducere AI (Mistral) din {source_lang} în {target_lang}...")
+    print(f"   Număr segmente: {len(segments)}")
+
     start_time = time.time()
     
     try:
-        # Împarte segmentele în grupuri de lungimi similare pentru o traducere mai bună
-        translated_segments = []
+        # Încărcăm LLM
+        llm = load_llm()
+        if not llm:
+            print("⚠️ LLM nu este disponibil. Returnez segmentele originale.")
+            return segments
+
+        batch_size = 20
+        all_translated = []
+        total_batches = math.ceil(len(segments) / batch_size)
         
-        # Grupează segmentele scurte pentru traducere mai eficientă
-        short_segments = []
-        long_segments = []
-        
-        for seg in segments:
-            text_length = len(seg['text'])
-            if text_length < 50:  # Segmente scurte
-                short_segments.append(seg)
-            else:  # Segmente lungi
-                long_segments.append(seg)
-        
-        # Traduce segmentele scurte în batch-uri
-        if short_segments:
-            print(f"Traduc {len(short_segments)} segmente scurte...")
-            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=10)
-            translated_segments.extend(translated_short)
-        
-        # Traduce segmentele lungi individual pentru mai multă precizie
-        if long_segments:
-            print(f"Traduc {len(long_segments)} segmente lungi...")
-            for seg in long_segments:
+        # Mapare coduri de limbă la nume complete pentru prompt
+        lang_names = {
+            'ro': 'Română', 'en': 'Engleză', 'fr': 'Franceză', 'de': 'Germană',
+            'es': 'Spaniolă', 'it': 'Italiană', 'ru': 'Rusă'
+        }
+        target_name = lang_names.get(target_lang, target_lang)
+
+        system_prompt = (
+            f"Ești un traducător profesionist expert în subtitrări. "
+            f"Sarcina ta este să traduci segmentele primite din limba sursă în limba {target_name}. "
+            "Păstrează formatul [ID] Text pe fiecare linie. "
+            "Păstrează numerotarea originală a ID-urilor. "
+            "Tradu într-un mod natural, adaptat contextului. "
+            "NU adăuga explicații, comentarii sau alte texte. Doar lista tradusă."
+        )
+
+        for i in range(0, len(segments), batch_size):
+            batch = segments[i : i + batch_size]
+            current_batch_num = (i // batch_size) + 1
+
+            text_to_translate = ""
+            for idx, seg in enumerate(batch):
+                # Whisper segments might not have 'id', so we use a relative one if needed
+                # But our translation logic usually expects ids starting from i+1
+                seg_id = seg.get('id', i + idx + 1)
+                text_to_translate += f"[{seg_id}] {seg['text']}\n"
+
+            user_input = f"Segmente de tradus:\n{text_to_translate}"
+
+            print(f"🤖 Batch {current_batch_num}/{total_batches} ({len(batch)} segmente)...")
+
+            batch_start = time.time()
+            with gpu_processing_lock:
+                response = llm.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_input}
+                    ],
+                    temperature=0.2,
+                    max_tokens=4096
+                )
+            batch_time = time.time() - batch_start
+
+            llm_text = response['choices'][0]['message']['content'].strip()
+
+            # Raportăm progresul și viteza în statusul task-ului dacă avem un process_id
+            if process_id:
+                progress = int((current_batch_num / total_batches) * 100)
+                tokens = response.get('usage', {}).get('completion_tokens', 0)
+                tps = tokens / batch_time if batch_time > 0 else 0
+                llm_mode = "CUDA" if getattr(llm, 'n_gpu_layers', 0) != 0 else "CPU"
+
+                update_task_status(process_id, 'processing', progress,
+                                   f'Traducere AI: batch {current_batch_num}/{total_batches} ({tps:.1f} t/s)...',
+                                   llm_tps=round(tps, 1), llm_mode=llm_mode)
+
+            # Parsăm batch-ul tradus
+            import re
+            lines = llm_text.split('\n')
+            translated_map = {}
+            for line in lines:
                 try:
-                    # Traduce fiecare segment lung individual
-                    batch_result = translate_segment_batch([seg], source_lang, target_lang, batch_size=1)
-                    if batch_result:
-                        translated_segments.append(batch_result[0])
-                    else:
-                        translated_segments.append(seg)
+                    match = re.search(r'\[(\d+)\]\s*(.*)', line)
+                    if not match:
+                        match = re.search(r'^(\d+)[\.\)]\s*(.*)', line)
+
+                    if match:
+                        sid = int(match.group(1))
+                        text = match.group(2).strip()
+                        if text:
+                            translated_map[sid] = text
                 except:
-                    translated_segments.append(seg)
-        
-        # Asigură-te că ordinea este păstrată
-        translated_segments.sort(key=lambda x: x['start'])
-        
+                    continue
+
+            # Reconstruim segmentele traduse păstrând restul datelor
+            for idx, seg in enumerate(batch):
+                seg_id = seg.get('id', i + idx + 1)
+                translated_seg = seg.copy()
+                if seg_id in translated_map:
+                    translated_seg['text'] = translated_map[seg_id]
+                else:
+                    # Fallback la Google Translate dacă Mistral a sărit peste el
+                    try:
+                        translated_seg['text'] = GoogleTranslator(source='auto', target=target_lang).translate(seg['text'])
+                    except:
+                        pass # Păstrează originalul
+                all_translated.append(translated_seg)
+
         translation_time = time.time() - start_time
-        print(f"✓ Traducere completă în {translation_time:.1f} secunde")
+        print(f"✓ Traducere AI completă în {translation_time:.1f} secunde")
         
-        return translated_segments
+        return all_translated
         
     except Exception as e:
-        print(f"✗ Eroare la traducere: {str(e)}")
-        # În caz de eroare, returnează segmentele originale
+        print(f"❌ Eroare la traducerea AI: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return segments
 
 def translate_text(text, source_lang, target_lang):
-    """Traduce text folosind modelul corespunzător"""
+    """
+    Traduce text folosind modelul Mistral (LLM).
+    Fallback la Google Translate dacă eșuează.
+    """
     if not text or not text.strip() or source_lang == target_lang:
         return text
     
     text = text.strip()
     
     try:
-        # Încarcă modelul de traducere
-        model_data = load_translation_model(source_lang, target_lang)
+        llm = load_llm()
+        if not llm:
+            return GoogleTranslator(source='auto', target=target_lang).translate(text)
+
+        lang_names = {'ro': 'Română', 'en': 'Engleză', 'fr': 'Franceză', 'de': 'Germană'}
+        target_name = lang_names.get(target_lang, target_lang)
+
+        prompt = f"Tradu următorul text în limba {target_name}. Răspunde DOAR cu traducerea:\n\n{text}"
         
-        if not model_data:
-            return text
-        
-        model = model_data['model']
-        tokenizer = model_data['tokenizer']
-        device = model_data['device']
-        model_type = model_data['model_type']
-        
-        if model_type == 'marian':
-            # MarianMT
-            inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
-            translated = model.generate(**inputs, max_length=512, num_beams=4, early_stopping=True)
-            result = tokenizer.decode(translated[0], skip_special_tokens=True)
-            
-        elif model_type == 'nllb':
-            # NLLB-200
-            src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
-            tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
-            
-            # Setează limba sursă
-            if hasattr(tokenizer, 'src_lang'):
-                tokenizer.src_lang = src_code
-            
-            # Obține ID-ul limbii țintă
-            forced_bos_token_id = None
-            try:
-                if hasattr(tokenizer, 'get_lang_id'):
-                    forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
-                elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
-                    forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
-            except:
-                pass
-            
-            inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
-            
-            if forced_bos_token_id is not None:
-                translated = model.generate(
-                    **inputs,
-                    forced_bos_token_id=forced_bos_token_id,
-                    max_length=512,
-                    num_beams=4,
-                    early_stopping=True
-                )
-            else:
-                translated = model.generate(
-                    **inputs,
-                    max_length=512,
-                    num_beams=4,
-                    early_stopping=True
-                )
-            
-            result = tokenizer.decode(translated[0], skip_special_tokens=True)
-        
-        else:
-            result = text
-        
-        return result.strip()
+        with gpu_processing_lock:
+            response = llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": "Ești un traducător expert."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=512
+            )
+
+        result = response['choices'][0]['message']['content'].strip()
+        return result
         
     except Exception as e:
-        print(f"Eroare la traducere text: {str(e)}")
-        return text
+        print(f"⚠️ Eroare la traducere AI text: {str(e)}. Fallback la Google.")
+        try:
+            return GoogleTranslator(source='auto', target=target_lang).translate(text)
+        except:
+            return text
 
 def get_model_info(model_name):
     """Returnează informații despre model"""
@@ -575,7 +540,7 @@ def get_process_dir(process_id):
         return None
     return os.path.join(app.config['UPLOAD_FOLDER'], f'process_{safe_id}')
 
-def update_task_status(process_id, status, progress=0, message='', result=None):
+def update_task_status(process_id, status, progress=0, message='', result=None, **kwargs):
     """Actualizează statusul unui task pe disc și în memorie"""
     process_dir = get_process_dir(process_id)
     if not process_dir:
@@ -591,7 +556,8 @@ def update_task_status(process_id, status, progress=0, message='', result=None):
         'message': message,
         'timestamp': datetime.now().isoformat(),
         'last_heartbeat': time.time(),
-        'result': result
+        'result': result,
+        **kwargs
     }
 
     with open(filepath, 'w', encoding='utf-8') as f:
@@ -628,7 +594,7 @@ def run_ffmpeg_with_progress(cmd, process_id, task_name, total_duration=None):
 
     process = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL, # Redirecționăm stdout către DEVNULL pentru a evita deadlock-ul pe pipe
         stderr=subprocess.PIPE,
         universal_newlines=True
     )
@@ -659,13 +625,36 @@ def run_ffmpeg_with_progress(cmd, process_id, task_name, total_duration=None):
         raise subprocess.CalledProcessError(process.returncode, cmd)
 
 def get_video_duration(video_path):
-    """Obține durata video folosind ffprobe"""
+    """Obține durata video folosind ffprobe (verifică format și streams)"""
     try:
-        probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                     '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
-        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
-        return float(result.stdout.strip())
-    except:
+        # Încearcă mai întâi durata formatului (cea mai rapidă)
+        probe_cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            video_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+
+        if result.returncode == 0 and result.stdout.strip() and result.stdout.strip() != 'N/A':
+            return float(result.stdout.strip())
+
+        # Dacă formatul nu are durată (ex: MXF sau streamuri corupte), verifică stream-ul video
+        probe_cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            video_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+
+        if result.returncode == 0 and result.stdout.strip() and result.stdout.strip() != 'N/A':
+            return float(result.stdout.strip())
+
+        return None
+    except Exception as e:
+        print(f"Eroare la obținere durată pentru {video_path}: {str(e)}")
         return None
 
 def convert_to_wav(input_path, process_id=None):
@@ -783,20 +772,20 @@ def convert_to_wav(input_path, process_id=None):
         return input_path
 
 def extract_video_preview(video_path, preview_dir):
-    """Extrage cadre pentru preview video"""
+    """Extrage cadre pentru preview video folosind input seeking pentru viteză"""
     try:
         # Creează un frame din mijlocul video-ului
         output_path = os.path.join(preview_dir, 'preview.jpg')
         
-        # Obține durata video folosind ffprobe
-        probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', 
-                     '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
-        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
-        duration = float(result.stdout.strip())
+        # Obține durata video folosind utilitarul îmbunătățit
+        duration = get_video_duration(video_path)
+        if not duration:
+            duration = 10  # Fallback
         
         # Extrage frame la 25% din durată (evită începutul și sfârșitul)
         preview_time = duration * 0.25 if duration > 2 else 0
         
+        # Input seeking (-ss înainte de -i) este mult mai rapid pentru fișiere mari
         extract_cmd = [
             'ffmpeg',
             '-ss', str(preview_time),
@@ -808,15 +797,15 @@ def extract_video_preview(video_path, preview_dir):
             output_path
         ]
         
-        subprocess.run(extract_cmd, capture_output=True, check=True)
+        # Utilizăm stdout=DEVNULL pentru a preveni blocajele de pipe
+        subprocess.run(extract_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
         
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return output_path
-        else:
-            return None
+        return None
             
     except Exception as e:
-        print(f"Eroare la extragerea preview: {e}")
+        print(f"Eroare la extragerea preview pentru {video_path}: {str(e)}")
         return None
 
 def extract_video_for_preview(video_path, output_dir):
@@ -882,12 +871,57 @@ def convert_to_mp4_for_playback(video_path, output_dir, process_id=None):
     try:
         output_path = os.path.join(output_dir, 'playback.mp4')
         duration = get_video_duration(video_path)
-        
+
+        # Optimizare: Dacă este deja MP4 cu H.264, doar îl copiem (mult mai rapid)
+        if video_path.lower().endswith('.mp4'):
+            try:
+                probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                             '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', video_path]
+                codec = subprocess.check_output(probe_cmd).decode().strip()
+                if codec == 'h264':
+                    print(f"Video-ul este deja H.264, îl copiez direct...")
+                    shutil.copy2(video_path, output_path)
+                    return output_path
+            except:
+                pass
+
+        # Verifică dacă NVENC este disponibil pentru accelerare hardware
+        use_nvenc = is_nvenc_available()
+
+        if use_nvenc:
+            print("Folosesc accelerare hardware NVENC pentru preview...")
+            cmd = [
+                'ffmpeg',
+                '-hwaccel', 'cuda',
+                '-i', video_path,
+                '-c:v', 'h264_nvenc',
+                '-preset', 'p1',          # Cel mai rapid preset NVENC
+                '-tune', 'ull',           # Ultra-low latency
+                '-c:a', 'aac',
+                '-movflags', '+faststart',
+                '-y',
+                output_path
+            ]
+
+            try:
+                if process_id:
+                    run_ffmpeg_with_progress(cmd, process_id, "Pregătire video (MP4)", duration)
+                else:
+                    subprocess.run(cmd, capture_output=True, check=True)
+
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    return output_path
+                print("NVENC a eșuat sau a produs un fișier gol. Încerc fallback software...")
+            except Exception as e:
+                print(f"Eroare la NVENC: {e}. Încerc fallback software...")
+
+        # Fallback sau software encoding implicit
+        print("Folosesc encoding software pentru preview...")
         cmd = [
             'ffmpeg',
             '-i', video_path,
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',   # Mai rapid pentru preview
+            '-preset', 'ultrafast',   # Mai rapid pentru preview software
             '-c:a', 'aac',
             '-movflags', '+faststart',
             '-y',
@@ -1012,48 +1046,208 @@ def split_text_by_duration(text, duration, max_chars, min_segment_duration=1.0):
     
     return final_chunks
 
+def apply_timing_padding(segments, padding=0.5, max_gap=1.5):
+    """Extinde durata segmentelor pentru a acoperi golurile scurte de liniște"""
+    for i in range(len(segments) - 1):
+        gap = segments[i+1]['start'] - segments[i]['end']
+        if 0 < gap < max_gap:
+            # Extindem până la începutul următorului segment, dar nu mai mult de padding
+            segments[i]['end'] = min(segments[i]['end'] + padding, segments[i+1]['start'])
+    return segments
+
+def filter_hallucinations(segments):
+    """
+    Elimină halucinațiile comune ale modelului Whisper (ex: 'Multumim pentru vizionare').
+    Acestea apar de obicei în porțiunile de liniște sau la finalul videoclipului.
+    """
+    if not segments:
+        return segments
+
+    blacklist = [
+        "multumim pentru vizionare",
+        "vă mulțumim pentru vizionare",
+        "vă mulțumesc pentru vizionare",
+        "va multumim pentru vizionare",
+        "multumesc pentru vizionare",
+        "subtitrare realizată de",
+        "vizionare plăcută",
+        "thank you for watching",
+        "thanks for watching"
+    ]
+
+    filtered = []
+    for seg in segments:
+        text = seg['text'].strip().lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+
+        # Dacă textul este în blacklist, îl ignorăm
+        is_hallucination = False
+        for phrase in blacklist:
+            if phrase in text and len(text) < len(phrase) + 5: # Verificăm dacă segmentul este DOAR acea frază (aprox)
+                is_hallucination = True
+                break
+
+        if is_hallucination:
+            print(f"  [Filtru AI] Eliminat segment halucinat: '{seg['text'].strip()}'")
+            continue
+
+        filtered.append(seg)
+
+    return filtered
+
+def deduplicate_segments(segments, threshold=0.85):
+    """
+    Elimină segmentele consecutive care sunt identice sau foarte similare (bâlbâială Whisper).
+    Specific util pentru limba română unde Whisper tinde să repete propoziții scurte.
+    """
+    if not segments:
+        return segments
+
+    filtered = []
+    for i, seg in enumerate(segments):
+        if not filtered:
+            filtered.append(seg)
+            continue
+
+        prev = filtered[-1]
+
+        # Curățăm textul pentru comparație
+        text1 = prev['text'].strip().lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+        text2 = seg['text'].strip().lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+
+        if not text1 or not text2:
+            filtered.append(seg)
+            continue
+
+        # Verificăm dacă sunt identice
+        is_duplicate = False
+        if text1 == text2:
+            is_duplicate = True
+        elif len(text1) > 8 and len(text2) > 8:
+            # Similitudine bazată pe cuvinte
+            w1 = text1.split()
+            w2 = text2.split()
+            if w1 and w2:
+                common = set(w1) & set(w2)
+                sim = len(common) / max(len(w1), len(w2))
+                if sim > threshold:
+                    is_duplicate = True
+
+        if is_duplicate:
+            # Extindem durata segmentului anterior pentru a acoperi și acest timp
+            prev['end'] = max(prev['end'], seg['end'])
+            print(f"  [Deduplicare] Eliminat segment repetat: '{seg['text'].strip()}'")
+            continue
+
+        filtered.append(seg)
+
+    return filtered
+
 def adjust_segmentation_algorithm(segments, min_duration=1.0, max_duration=5.0, max_chars=80):
-    """Ajustează segmentarea pentru a fi mai potrivită pentru subtitrări"""
-    adjusted_segments = []
-    
-    for segment in segments:
-        text = segment['text'].strip()
-        start = segment['start']
-        end = segment['end']
-        duration = end - start
-        
-        # Dacă segmentul e prea scurt, îl combinăm cu următorul (dacă există)
-        if duration < min_duration and adjusted_segments:
-            last_segment = adjusted_segments[-1]
-            last_segment['end'] = end
-            
-            # Combină textul fără a duplica spații
-            combined_text = f"{last_segment['text']} {text}".strip()
-            # Elimină spații multiple
-            combined_text = ' '.join(combined_text.split())
-            last_segment['text'] = combined_text
-        # Dacă segmentul e prea lung sau textul e prea lung, îl împărțim
-        elif duration > max_duration or len(text) > max_chars:
-            # Împarte textul în bucăți rezonabile
-            text_segments = split_text_by_duration(text, duration, max_chars, min_duration)
-            
-            if len(text_segments) > 1:
-                # Distribuie timpul uniform între segmentele noi
-                segment_duration = duration / len(text_segments)
-                for i, text_segment in enumerate(text_segments):
-                    seg_start = start + (i * segment_duration)
-                    seg_end = start + ((i + 1) * segment_duration)
-                    adjusted_segments.append({
-                        'start': seg_start,
-                        'end': seg_end,
-                        'text': text_segment.strip()
-                    })
-            else:
-                adjusted_segments.append(segment)
+    """
+    Ajustează segmentarea utilizând word timestamps dacă sunt disponibile.
+    Gruparea este mai inteligentă și se potrivește mai bine cu ritmul vorbirii.
+    Păstrează metadatele precum limba detectată.
+    """
+    all_words = []
+    for seg in segments:
+        seg_lang = seg.get('detected_language') or seg.get('language')
+        if 'words' in seg and seg['words']:
+            # Folosim word timestamps pentru precizie maximă
+            for w in seg['words']:
+                word_item = w.copy()
+                word_item['detected_language'] = seg_lang
+                all_words.append(word_item)
         else:
-            adjusted_segments.append(segment)
-    
-    return adjusted_segments
+            # Fallback: împărțim textul existent în cuvinte (fără timing precis per cuvânt)
+            words = seg['text'].strip().split()
+            if not words: continue
+
+            word_duration = (seg['end'] - seg['start']) / len(words)
+            for i, w in enumerate(words):
+                all_words.append({
+                    'word': w,
+                    'start': seg['start'] + (i * word_duration),
+                    'end': seg['start'] + ((i + 1) * word_duration),
+                    'detected_language': seg_lang
+                })
+
+    if not all_words:
+        return segments
+
+    adjusted_segments = []
+    current_words = []
+    current_text = ""
+    current_start = all_words[0]['start']
+    current_lang = all_words[0].get('detected_language')
+
+    for i, word_info in enumerate(all_words):
+        word = word_info['word']
+        start = word_info['start']
+        end = word_info['end']
+        lang = word_info.get('detected_language')
+
+        clean_word = word.strip()
+        if not clean_word and len(current_words) > 0: continue
+
+        # Verificăm limitele
+        proposed_text = f"{current_text} {clean_word}".strip()
+        duration = end - current_start
+
+        # Decizii de tăiere mai inteligente
+        should_split = False
+        if len(proposed_text) > max_chars:
+            should_split = True
+        elif duration > max_duration:
+            should_split = True
+        # Dacă există o pauză semnificativă (peste 0.3s), tăiem pentru a fi mai "tight" pe voce
+        elif i > 0 and (start - all_words[i-1]['end']) > 0.3:
+            should_split = True
+        # Dacă s-a schimbat limba (la granița de chunk)
+        elif lang != current_lang:
+            should_split = True
+
+        if should_split and current_words:
+            adjusted_segments.append({
+                'start': current_start,
+                'end': current_words[-1]['end'],
+                'text': current_text.strip(),
+                'detected_language': current_lang
+            })
+            current_words = []
+            current_text = ""
+            current_start = start
+            current_lang = lang
+            proposed_text = clean_word
+
+        current_words.append(word_info)
+        current_text = proposed_text
+
+    if current_words:
+        adjusted_segments.append({
+            'start': current_start,
+            'end': current_words[-1]['end'],
+            'text': current_text.strip(),
+            'detected_language': current_lang
+        })
+
+    # Merge segmente prea scurte și padding
+    final_segments = []
+    for seg in adjusted_segments:
+        if not final_segments:
+            final_segments.append(seg)
+            continue
+
+        last = final_segments[-1]
+
+        # Dacă segmentul curent este foarte scurt, îl combinăm cu anteriorul
+        if (seg['end'] - seg['start']) < 0.8 and (len(last['text']) + len(seg['text'])) < max_chars:
+            last['end'] = seg['end']
+            last['text'] = f"{last['text']} {seg['text']}".strip()
+        else:
+            final_segments.append(seg)
+
+    # Aplicăm padding final pentru lizibilitate
+    return apply_timing_padding(final_segments)
 
 # ============================================================================
 # FUNCȚII PENTRU UPLOAD SEGMENTAT
@@ -1170,9 +1364,14 @@ def cleanup_upload_session(session_id):
             del upload_sessions[session_id]
 
 def process_large_file(file_path, model_name, language, translation_target,
-                      should_adjust_segmentation, process_id, extract_audio_only=False):
+                      should_adjust_segmentation, process_id, extract_audio_only=False,
+                      whisper_settings=None):
     """Procesează un fișier folosind tehnici optimizate pentru feedback granular"""
     print(f"Procesez fișierul: {file_path}")
+
+    # Safety check: asigura-te ca fisierul este valid media
+    if not allowed_file(file_path):
+        raise ValueError(f"Fișierul {os.path.basename(file_path)} nu este un format media acceptat.")
 
     try:
         # Încarcă modelul
@@ -1258,10 +1457,11 @@ def process_large_file(file_path, model_name, language, translation_target,
 
             print(f"Durata totală: {duration:.1f}s, Chunks: {total_chunks}")
 
+            # Procesează fiecare chunk din fișierul audio extras
             all_segments = []
             detected_language = language
+            language_per_chunk = []  # Stocăm limba pentru fiecare chunk
 
-            # Procesează fiecare chunk din fișierul audio extras
             for chunk_idx in range(total_chunks):
                 # Verifică dacă task-ul a fost anulat
                 task = get_task_status(process_id)
@@ -1270,10 +1470,11 @@ def process_large_file(file_path, model_name, language, translation_target,
                     return None
 
                 start_chunk = chunk_idx * chunk_duration
-                length_chunk = min(chunk_duration, duration - start_chunk)
+                # Adăugăm o mică marjă (overlap) de 2 secunde pentru context
+                length_chunk = min(chunk_duration + 2.0, duration - start_chunk)
 
                 # Evită chunk-uri insignifiante
-                if length_chunk < 0.1:
+                if length_chunk < 0.5:
                     continue
 
                 progress_val = 15 + int((chunk_idx / total_chunks) * 60)
@@ -1304,6 +1505,8 @@ def process_large_file(file_path, model_name, language, translation_target,
                         # Verifică durata chunk-ului
                         chunk_dur = get_video_duration(audio_chunk_path)
                         if chunk_dur and chunk_dur > 0.1:
+                            # 🔴 MODIFICARE IMPORTANTĂ: Folosim limba selectată de utilizator dacă există
+                            # Altfel lăsăm Whisper să detecteze limba pentru FIECARE chunk
                             transcribe_kwargs = {
                                 'task': 'transcribe',
                                 'fp16': (device == "cuda")
@@ -1311,7 +1514,48 @@ def process_large_file(file_path, model_name, language, translation_target,
                             if language != 'auto':
                                 transcribe_kwargs['language'] = language
 
+                            # Adaugă setări Whisper avansate dacă există
+                            if whisper_settings:
+                                if 'no_speech_threshold' in whisper_settings and whisper_settings['no_speech_threshold'] is not None:
+                                    transcribe_kwargs['no_speech_threshold'] = float(whisper_settings['no_speech_threshold'])
+                                if 'logprob_threshold' in whisper_settings and whisper_settings['logprob_threshold'] is not None:
+                                    transcribe_kwargs['logprob_threshold'] = float(whisper_settings['logprob_threshold'])
+                                if 'compression_ratio_threshold' in whisper_settings and whisper_settings['compression_ratio_threshold'] is not None:
+                                    transcribe_kwargs['compression_ratio_threshold'] = float(whisper_settings['compression_ratio_threshold'])
+                                if 'condition_on_previous_text' in whisper_settings and whisper_settings['condition_on_previous_text'] is not None:
+                                    # Convertim din string 'true'/'false' dacă vine de la form data
+                                    val = whisper_settings['condition_on_previous_text']
+                                    if isinstance(val, str):
+                                        transcribe_kwargs['condition_on_previous_text'] = val.lower() == 'true'
+                                    else:
+                                        transcribe_kwargs['condition_on_previous_text'] = bool(val)
+                                if 'initial_prompt' in whisper_settings and whisper_settings['initial_prompt']:
+                                    transcribe_kwargs['initial_prompt'] = whisper_settings['initial_prompt']
+
+                            # Default values for robustness if not set by user
+                            if 'no_speech_threshold' not in transcribe_kwargs:
+                                # Mărim pragul pentru a evita halucinațiile pe liniște/muzică
+                                transcribe_kwargs['no_speech_threshold'] = 0.8
+                            if 'logprob_threshold' not in transcribe_kwargs:
+                                transcribe_kwargs['logprob_threshold'] = -1.0
+                            if 'condition_on_previous_text' not in transcribe_kwargs:
+                                # IMPORTANT: Dezactivăm implicit pentru a evita repetițiile (stuttering)
+                                # Mai ales important pentru limba română
+                                transcribe_kwargs['condition_on_previous_text'] = False
+
                             chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
+
+                            # Înregistrăm limba detectată pentru acest chunk
+                            chunk_lang = chunk_result.get('language', 'unknown')
+                            language_per_chunk.append({
+                                'chunk': chunk_idx + 1,
+                                'start_time': start_chunk,
+                                'end_time': start_chunk + length_chunk,
+                                'language': chunk_lang,
+                                'segments_count': len(chunk_result.get('segments', []))
+                            })
+
+                            print(f"  ✓ Chunk {chunk_idx + 1}: Limbă detectată = {chunk_lang}, segmente = {len(chunk_result.get('segments', []))}")
                         else:
                             print(f"Chunk {chunk_idx} prea scurt: {chunk_dur}s")
                     except Exception as e:
@@ -1323,33 +1567,78 @@ def process_large_file(file_path, model_name, language, translation_target,
                         os.remove(audio_chunk_path)
                     continue
 
-                # Capture detected language from the first chunk if in auto mode
-                if chunk_idx == 0 and language == 'auto':
-                    detected_language = chunk_result.get('language', 'en')
-                    print(f"Limbă detectată de Whisper: {detected_language}")
+                # Nu mai setăm detected_language global - fiecare chunk are propria limbă
 
                 chunk_segments = chunk_result.get('segments', [])
 
                 if not chunk_segments:
                     continue
 
-                # Ajustează timpii segmentelor
+                # Ajustează timpii segmentelor și elimină duplicatele din overlap
                 for seg in chunk_segments:
-                    seg['start'] += start_chunk
-                    seg['end'] += start_chunk
+                    actual_start = seg['start'] + start_chunk
+                    actual_end = seg['end'] + start_chunk
+
+                    # Dacă segmentul începe după durata oficială a chunk-ului (fără overlap)
+                    # îl ignorăm deoarece va fi preluat de următorul chunk
+                    if chunk_idx < total_chunks - 1 and seg['start'] >= chunk_duration:
+                        continue
+
+                    # Limităm finalul segmentului la durata totală a audio-ului pentru a evita halucinațiile
+                    actual_end = min(actual_end, duration)
+
+                    # Dacă segmentul este o halucinație evidentă (durată imensă sau text repetat gol)
+                    if (actual_end - actual_start) > 30: # Segmente mai lungi de 30s sunt suspecte
+                        continue
+
+                    seg['start'] = actual_start
+                    seg['end'] = actual_end
+                    # Adăugăm informația despre limba chunk-ului în fiecare segment
+                    seg['detected_language'] = chunk_result.get('language', 'unknown')
                     all_segments.append(seg)
 
                 # Curăță chunk-ul audio
                 os.remove(audio_chunk_path)
 
+            # La final, salvăm informațiile despre limbile detectate
+            language_report_path = os.path.join(process_dir, 'language_report.json')
+            with open(language_report_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'chunks': language_per_chunk,
+                    'total_chunks': total_chunks,
+                    'languages_detected': list(set([item['language'] for item in language_per_chunk]))
+                }, f, ensure_ascii=False, indent=2)
+
             # Procesează segmentele combinate
             segments = sorted(all_segments, key=lambda x: x['start'])
+
+            # Elimină repetițiile (bâlbâiala Whisper)
+            print(f"Aplic deduplicarea segmentelor (inițial: {len(segments)})...")
+            segments = deduplicate_segments(segments)
+
+            # Filtrează halucinațiile (ex: Multumim pentru vizionare)
+            segments = filter_hallucinations(segments)
+
+            print(f"După procesare: {len(segments)} segmente.")
 
             if should_adjust_segmentation:
                 segments = adjust_segmentation_algorithm(segments)
 
+            # Determinăm limbile predominante pentru raportare
+            from collections import Counter
+            lang_counter = Counter([item['language'] for item in language_per_chunk])
+            primary_language = lang_counter.most_common(1)[0][0] if lang_counter else 'unknown'
+            secondary_languages = [lang for lang, count in lang_counter.most_common()[1:3]]
+
+            print(f"📊 Raport limbă pe chunk-uri:")
+            for item in language_per_chunk:
+                print(f"  Chunk {item['chunk']}: {item['language']} ({item['start_time']:.0f}s - {item['end_time']:.0f}s)")
+
             return {
-                'result': {'text': " ".join([s['text'] for s in segments]), 'language': detected_language},
+                'result': {'text': " ".join([s['text'] for s in segments]),
+                           'language': primary_language,
+                           'languages_detected': dict(lang_counter),
+                           'secondary_languages': secondary_languages},
                 'segments': segments,
                 'transcribe_time': 0
             }
@@ -1359,15 +1648,22 @@ def process_large_file(file_path, model_name, language, translation_target,
             # Fallback la procesare normală
             return process_normal_file(file_path, model, device, language,
                                      translation_target, should_adjust_segmentation,
-                                     process_id, is_video, is_mp4)
+                                     process_id, is_video, is_mp4,
+                                     whisper_settings=whisper_settings)
         
     except Exception as e:
         print(f"Eroare la procesarea fișierului: {str(e)}")
         raise
 
 def process_normal_file(file_path, model, device, language, translation_target,
-                       should_adjust_segmentation, process_id, is_video, is_mp4, extract_audio_only=False):
+                       should_adjust_segmentation, process_id, is_video, is_mp4,
+                       extract_audio_only=False, whisper_settings=None):
     """Procesează un fișier folosind metoda normală"""
+
+    # Safety check
+    if not allowed_file(file_path):
+        raise ValueError(f"Fișierul {os.path.basename(file_path)} nu este un format media acceptat.")
+
     audio_path = file_path
     
     # Încearcă să extragă audio dacă este video
@@ -1396,11 +1692,32 @@ def process_normal_file(file_path, model, device, language, translation_target,
     
     transcribe_kwargs = {
         'task': 'transcribe',
-        'fp16': (device == "cuda")
+        'fp16': (device == "cuda"),
+        'condition_on_previous_text': False,
+        'no_speech_threshold': 0.7,
+        'logprob_threshold': -1.0,
+        'word_timestamps': True
     }
     
     if language != 'auto':
         transcribe_kwargs['language'] = language
+
+    # Adaugă setări Whisper avansate dacă există
+    if whisper_settings:
+        if 'no_speech_threshold' in whisper_settings and whisper_settings['no_speech_threshold'] is not None:
+            transcribe_kwargs['no_speech_threshold'] = float(whisper_settings['no_speech_threshold'])
+        if 'logprob_threshold' in whisper_settings and whisper_settings['logprob_threshold'] is not None:
+            transcribe_kwargs['logprob_threshold'] = float(whisper_settings['logprob_threshold'])
+        if 'compression_ratio_threshold' in whisper_settings and whisper_settings['compression_ratio_threshold'] is not None:
+            transcribe_kwargs['compression_ratio_threshold'] = float(whisper_settings['compression_ratio_threshold'])
+        if 'condition_on_previous_text' in whisper_settings and whisper_settings['condition_on_previous_text'] is not None:
+            val = whisper_settings['condition_on_previous_text']
+            if isinstance(val, str):
+                transcribe_kwargs['condition_on_previous_text'] = val.lower() == 'true'
+            else:
+                transcribe_kwargs['condition_on_previous_text'] = bool(val)
+        if 'initial_prompt' in whisper_settings and whisper_settings['initial_prompt']:
+            transcribe_kwargs['initial_prompt'] = whisper_settings['initial_prompt']
     
     try:
         print(f"Transcriere fișier: {audio_path}")
@@ -1413,6 +1730,12 @@ def process_normal_file(file_path, model, device, language, translation_target,
             raise Exception(f"Durată audio invalidă: {audio_dur}")
 
         result = model.transcribe(audio_path, **transcribe_kwargs)
+
+        # Post-procesare pentru eliminarea repetițiilor în modul normal
+        if 'segments' in result:
+            result['segments'] = deduplicate_segments(result['segments'])
+            result['segments'] = filter_hallucinations(result['segments'])
+
     except Exception as e:
         print(f"Eroare la transcriere: {str(e)}")
         # Încearcă să transcrie direct fișierul original fără parametri speciali
@@ -1588,16 +1911,19 @@ def chunk_upload_status(session_id):
         return jsonify({'error': f'Eroare: {str(e)}'}), 500
 
 def background_processing_task(original_path, model_name, language, translation_target,
-                             should_adjust_segmentation, process_id, extract_audio_only, original_filename):
+                             should_adjust_segmentation, process_id, extract_audio_only,
+                             original_filename, whisper_settings=None):
     """Task de procesare care rulează în background"""
     try:
         update_task_status(process_id, 'processing', 5, 'Inițializare procesare...')
 
-        # Procesează fișierul
-        process_result = process_large_file(
-            original_path, model_name, language, translation_target,
-            should_adjust_segmentation, process_id, extract_audio_only
-        )
+        # Procesează fișierul (cu lock GPU pentru a evita supraîncărcarea)
+        with gpu_processing_lock:
+            process_result = process_large_file(
+                original_path, model_name, language, translation_target,
+                should_adjust_segmentation, process_id, extract_audio_only,
+                whisper_settings=whisper_settings
+            )
 
         if process_result is None:
             # Verifică dacă a fost anulat
@@ -1614,10 +1940,34 @@ def background_processing_task(original_path, model_name, language, translation_
         result = process_result.get('result', {})
         segments = process_result.get('segments', [])
         detected_language = result.get('language', language)
+        secondary_languages = result.get('secondary_languages', [])
+        languages_detected = result.get('languages_detected', {})
 
-        # Creează segmentele originale
+        # Raportul de limbi a fost deja salvat în process_large_file cu detalii complete.
+        # Ne asigurăm doar că folderul procesului este corect identificat.
+        process_dir = get_process_dir(process_id)
+
+        # Salvează raportul de limbi
+        language_report_path = os.path.join(process_dir, 'language_report.json')
+        if os.path.exists(language_report_path):
+            # Deja salvat, nu facem nimic
+            pass
+        else:
+            # Salvăm informațiile
+            with open(language_report_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'primary_language': detected_language,
+                    'secondary_languages': secondary_languages,
+                    'languages_detected': languages_detected,
+                    'total_segments': len(segments)
+                }, f, ensure_ascii=False, indent=2)
+
+        # Creează segmentele originale - PĂSTRĂM INFORMAȚIA DESPRE LIMBA FIECĂRUI SEGMENT
         original_segments = []
         for i, segment in enumerate(segments):
+            # Extragem limba segmentului (salvată în procesare)
+            segment_lang = segment.get('detected_language', detected_language)
+
             original_segments.append({
                 'id': i + 1,
                 'start': segment['start'],
@@ -1625,15 +1975,15 @@ def background_processing_task(original_path, model_name, language, translation_
                 'text': segment['text'].strip(),
                 'start_formatted': format_timestamp(segment['start']),
                 'end_formatted': format_timestamp(segment['end']),
-                'original': True
+                'original': True,
+                'language': segment_lang  # 🟢 Adăugăm limba segmentului
             })
 
         # Salvează segmentele pe disc pentru persistenta
-        process_dir = get_process_dir(process_id)
         with open(os.path.join(process_dir, 'original_segments.json'), 'w', encoding='utf-8') as f:
             json.dump({'segments': original_segments}, f, ensure_ascii=False)
 
-        # Traducere
+        # Traducere - folosește noua funcție multilingvă
         translated_segments = []
         translation_time = 0
         translation_used = None
@@ -1642,8 +1992,11 @@ def background_processing_task(original_path, model_name, language, translation_
             update_task_status(process_id, 'processing', 90, f'Traducere în {translation_target}...')
             translation_start = time.time()
             try:
-                translated = translate_segments(segments, detected_language, translation_target)
+                # Folosește traducerea multilingvă care ține cont de limba fiecărui segment
+                translated = translate_multilingual_segments(segments, translation_target, process_id)
                 translation_time = time.time() - translation_start
+
+                # Creăm segmentele traduse
                 for i, segment in enumerate(translated):
                     translated_segments.append({
                         'id': i + 1,
@@ -1653,13 +2006,19 @@ def background_processing_task(original_path, model_name, language, translation_
                         'start_formatted': format_timestamp(segment['start']),
                         'end_formatted': format_timestamp(segment['end']),
                         'original': False,
-                        'target_language': translation_target
+                        'target_language': translation_target,
+                        'source_language': segment.get('source_language', detected_language)
                     })
+
+                # Salvăm pe disc
                 with open(os.path.join(process_dir, f'translated_segments_{translation_target}.json'), 'w', encoding='utf-8') as f:
                     json.dump({'segments': translated_segments}, f, ensure_ascii=False)
+
                 translation_used = translation_target
+                print(f"✓ Traducere multilingvă completă în {translation_time:.1f} secunde")
+
             except Exception as e:
-                print(f"Eroare la traducere: {str(e)}")
+                print(f"✗ Eroare la traducere: {str(e)}")
 
         # Creează fișier SRT
         srt_filename = f"transcription_{process_id}.srt"
@@ -1672,23 +2031,52 @@ def background_processing_task(original_path, model_name, language, translation_
         is_video = any(original_path.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mov', '.mkv', '.mxf', '.m4v', '.webm', '.flv', '.wmv'])
 
         if is_video:
-            update_task_status(process_id, 'processing', 95, 'Pregătire preview...')
+            update_task_status(process_id, 'processing', 90, 'Generare preview video...')
             try:
                 # Extrage imagine preview (JPG)
                 preview_path = extract_video_preview(original_path, process_dir)
-                if preview_path:
+                if preview_path and os.path.exists(preview_path):
                     preview_filename = f"preview_{process_id}.jpg"
                     shutil.copy2(preview_path, os.path.join(app.config['UPLOAD_FOLDER'], preview_filename))
                     image_preview_url = f'/preview_image/{preview_filename}'
 
                 # Pregătește video pentru playback (MP4)
                 playback_path = convert_to_mp4_for_playback(original_path, process_dir, process_id)
-                if playback_path:
+                if playback_path and os.path.exists(playback_path):
                     video_filename = f"video_playback_{process_id}.mp4"
                     shutil.copy2(playback_path, os.path.join(app.config['UPLOAD_FOLDER'], video_filename))
                     video_preview_url = f'/video_file/{video_filename}'
+                elif original_path.lower().endswith('.mp4'):
+                    # Fallback dacă e deja mp4 - îl copiem pentru a fi disponibil după cleanup
+                    video_filename = f"video_playback_{process_id}.mp4"
+                    dest_path = os.path.join(app.config['UPLOAD_FOLDER'], video_filename)
+                    if not os.path.exists(dest_path):
+                        shutil.copy2(original_path, dest_path)
+                    video_preview_url = f'/video_file/{video_filename}'
             except Exception as preview_err:
                 print(f"Eroare la generarea preview-ului: {str(preview_err)}")
+
+        # Obține durata totală pentru frontend
+        video_duration = get_video_duration(original_path)
+        if not video_duration and is_video:
+            # Încercăm din fișierul de playback dacă originalul a fost deja șters
+            video_playback_path = os.path.join(app.config['UPLOAD_FOLDER'], f"video_playback_{process_id}.mp4")
+            if os.path.exists(video_playback_path):
+                video_duration = get_video_duration(video_playback_path)
+
+        # Salvează metadatele proiectului
+        project_data = {
+            'project_name': original_filename,
+            'original_filename': original_filename,
+            'process_id': process_id,
+            'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'duration': video_duration,
+            'language': detected_language,
+            'is_video': is_video,
+            'model_used': model_name
+        }
+        with open(os.path.join(process_dir, 'project.json'), 'w', encoding='utf-8') as f:
+            json.dump(project_data, f, ensure_ascii=False, indent=2)
 
         final_result = {
             'success': True,
@@ -1700,9 +2088,10 @@ def background_processing_task(original_path, model_name, language, translation_
             'process_id': process_id,
             'video_preview_url': video_preview_url,
             'image_preview_url': image_preview_url,
+            'video_duration': video_duration,
             'is_video': is_video,
-            'is_mp4': original_path.lower().endswith('.mp4'),
-            'original_format': original_path.rsplit('.', 1)[-1].lower() if '.' in original_path else 'unknown',
+            'is_mp4': original_path.lower().endswith('.mp4') or video_preview_url is not None,
+            'original_format': original_filename.rsplit('.', 1)[-1].lower() if '.' in original_filename else 'unknown',
             'model_used': model_name,
             'processing_time': 'Finalizat',
             'translation_time': f"{translation_time:.1f}s" if translation_time else None
@@ -1711,13 +2100,107 @@ def background_processing_task(original_path, model_name, language, translation_
         update_task_status(process_id, 'completed', 100, 'Procesare finalizată!', final_result)
 
     except Exception as e:
-        print(f"Eroare în background_task: {traceback.format_exc()}")
+        error_details = traceback.format_exc()
+        print(f"✗ Eroare în background_task {process_id}: {error_details}")
         update_task_status(process_id, 'error', message=str(e))
     finally:
-        # Cleanup fișier original combinat
-        if os.path.exists(original_path):
-            try: os.remove(original_path)
+        # Nu mai ștergem fișierul original pentru a permite re-transcrierea
+        # Cleanup doar pentru chunk-uri dacă există
+        if 'audio_chunks_dir' in locals() and os.path.exists(audio_chunks_dir):
+            try: shutil.rmtree(audio_chunks_dir)
             except: pass
+
+def background_translation_task(process_id, target_lang):
+    """Task de fundal pentru traducerea segmentelor existente"""
+    try:
+        process_dir = get_process_dir(process_id)
+        update_task_status(process_id, 'processing', 10, f'Se pregătește traducerea în {target_lang}...')
+
+        # Încărcăm segmentele originale de pe disc
+        original_segments_path = os.path.join(process_dir, 'original_segments.json')
+        if not os.path.exists(original_segments_path):
+            update_task_status(process_id, 'failed', message='Fișierul cu segmente originale nu a fost găsit')
+            return
+
+        with open(original_segments_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            segments = data.get('segments', [])
+
+        if not segments:
+            update_task_status(process_id, 'failed', message='Nu există segmente pentru traducere')
+            return
+
+        update_task_status(process_id, 'processing', 20, f'Se traduce în {target_lang}...')
+
+        # Obține limba predominantă din raportul salvat
+        overall_lang = 'en'
+        try:
+            report_path = os.path.join(process_dir, 'language_report.json')
+            if os.path.exists(report_path):
+                with open(report_path, 'r', encoding='utf-8') as f:
+                    report = json.load(f)
+                    overall_lang = report.get('primary_language')
+                    if not overall_lang and report.get('chunks'):
+                        overall_lang = report['chunks'][0].get('language', 'en')
+
+                    if not overall_lang:
+                        overall_lang = 'en'
+        except:
+            pass
+
+        # Format pentru translate_multilingual_segments
+        whisper_segments = []
+        for seg in segments:
+            whisper_segments.append({
+                'start': seg['start'],
+                'end': seg['end'],
+                'text': seg['text'],
+                'detected_language': seg.get('language') or seg.get('detected_language')
+            })
+
+        # Traducem cu fallback la limba predominantă
+        translated = translate_multilingual_segments(whisper_segments, target_lang, process_id)
+
+        # Formatăm rezultatul
+        translated_segments = []
+        for i, segment in enumerate(translated):
+            translated_segments.append({
+                'id': i + 1,
+                'start': segment['start'],
+                'end': segment['end'],
+                'text': segment['text'].strip(),
+                'start_formatted': format_timestamp(segment['start']),
+                'end_formatted': format_timestamp(segment['end']),
+                'original': False,
+                'target_language': target_lang,
+                'source_language': segment.get('source_language', 'unknown')
+            })
+
+        # Salvăm pe disc
+        json_filename = f'translated_segments_{target_lang}.json'
+        with open(os.path.join(process_dir, json_filename), 'w', encoding='utf-8') as f:
+            json.dump({'segments': translated_segments}, f, ensure_ascii=False)
+
+        # Salvăm SRT
+        srt_filename = f"transcription_{process_id}_{target_lang}.srt"
+        write_srt(translated, os.path.join(process_dir, srt_filename))
+
+        # Update status
+        final_result = {
+            'success': True,
+            'is_translated': True,
+            'translation_used': target_lang,
+            'process_id': process_id,
+            'segment_count': len(translated_segments),
+            'segments': translated_segments,
+            'filename': srt_filename
+        }
+
+        update_task_status(process_id, 'completed', 100, f'Traducere în {target_lang} finalizată!', final_result)
+
+    except Exception as e:
+        print(f"Eroare în background_translation_task: {traceback.format_exc()}")
+        update_task_status(process_id, 'error', message=str(e))
 
 @app.route('/api/chunk_upload/process/<session_id>', methods=['POST'])
 def chunk_upload_process(session_id):
@@ -1747,7 +2230,8 @@ def chunk_upload_process(session_id):
             data.get('adjust_segmentation', True),
             process_id,
             data.get('extract_audio_only', False),
-            session_info['file_name']
+            session_info['file_name'],
+            data.get('whisper_settings')
         ))
         thread.start()
 
@@ -1865,10 +2349,16 @@ def get_existing_translations():
                 except:
                     count = 0
 
+                # Detectăm dacă este o traducere AI
+                is_ai = file.startswith('translated_segments_ai_')
+                actual_lang_code = lang_code.replace('ai_', '') if is_ai else lang_code
+
                 translations.append({
                     'target_language': lang_code,
-                    'target_name': TRANSLATION_LANGUAGES.get(lang_code, lang_code),
-                    'segment_count': count
+                    'target_name': TRANSLATION_LANGUAGES.get(actual_lang_code, actual_lang_code),
+                    'display_name': f"AI: {TRANSLATION_LANGUAGES.get(actual_lang_code, actual_lang_code)}" if is_ai else TRANSLATION_LANGUAGES.get(actual_lang_code, actual_lang_code),
+                    'segment_count': count,
+                    'is_ai': is_ai
                 })
 
         # Obține info despre original
@@ -1887,6 +2377,55 @@ def get_existing_translations():
             'translations': translations,
             'total_translations': len(translations)
         })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/retranscribe/<process_id>', methods=['POST'])
+def api_retranscribe(process_id):
+    """Refă transcrierea folosind un fișier existent și noi parametri"""
+    try:
+        process_dir = get_process_dir(process_id)
+        if not process_dir or not os.path.exists(process_dir):
+            return jsonify({'error': 'Procesul nu a fost găsit'}), 404
+
+        # Caută fișierul original în directorul procesului
+        # Folosim funcția allowed_file pentru a identifica fișierele media valide
+        all_files = os.listdir(process_dir)
+
+        # Fișiere generate pe care le excludem chiar dacă au extensie validă (ex: playback.mp4)
+        generated_files = {'playback.mp4', 'full_audio.wav', 'extracted_audio.mp3'}
+
+        original_files = [f for f in all_files if allowed_file(f) and f not in generated_files]
+
+        if not original_files:
+            return jsonify({'error': 'Fișierul original media nu a fost găsit în directorul procesului.'}), 400
+
+        original_filename = original_files[0]
+        original_path = os.path.join(process_dir, original_filename)
+
+        data = request.get_json()
+        model_name = data.get('model', DEFAULT_MODEL)
+        language = data.get('language', 'auto')
+        translation_target = data.get('translation_target')
+        adjust_segmentation = data.get('adjust_segmentation', True)
+        whisper_settings = data.get('whisper_settings')
+
+        # Repornește task-ul în background
+        thread = threading.Thread(target=background_processing_task, args=(
+            original_path,
+            model_name,
+            language,
+            translation_target,
+            adjust_segmentation,
+            process_id,
+            False, # extract_audio_only
+            original_filename,
+            whisper_settings
+        ))
+        thread.start()
+
+        return jsonify({'success': True, 'process_id': process_id, 'message': 'Re-transcrierea a început'})
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1967,18 +2506,6 @@ def set_translation_target():
             })
         elif target_language in TRANSLATION_LANGUAGES:
             session['translation_target'] = target_language
-            current_lang = session.get('selected_language', 'auto')
-            
-            def load_translation_background(src, tgt):
-                try:
-                    if src != 'auto':
-                        load_translation_model(src, tgt)
-                except Exception as e:
-                    print(f"Eroare la încărcarea modelului de traducere: {str(e)}")
-            
-            thread = threading.Thread(target=load_translation_background, args=(current_lang, target_language))
-            thread.daemon = True
-            thread.start()
             
             return jsonify({
                 'success': True,
@@ -2086,20 +2613,24 @@ def model_status():
             else:
                 status[model_name] = {'loaded': False}
         
-        translation_status = {}
-        for model_key in translation_models.keys():
-            translation_status[model_key] = {
-                'loaded': True,
-                'device': translation_models[model_key]['device'],
-                'source': translation_models[model_key]['source'],
-                'target': translation_models[model_key]['target']
+        llm_mode = "N/A"
+        if llm_instance is not None:
+            llm_mode = "CUDA" if getattr(llm_instance, 'n_gpu_layers', 0) != 0 else "CPU"
+
+        translation_status = {
+            'mistral-ai': {
+                'loaded': llm_instance is not None,
+                'device': llm_mode,
+                'source': 'any',
+                'target': 'any'
             }
+        }
         
         system_info = {
             'cuda_available': torch.cuda.is_available(),
             'cpu_count': os.cpu_count(),
             'total_models_loaded': len(loaded_models),
-            'translation_models_loaded': len(translation_models)
+            'llm_loaded': llm_instance is not None
         }
         
         return jsonify({
@@ -2130,6 +2661,19 @@ def upload_file():
     translation_target = request.form.get('translation_target', session.get('translation_target', None))
     should_adjust_segmentation = request.form.get('adjust_segmentation', 'true').lower() == 'true'
     
+    # Extragere setări Whisper din form (pentru upload simplu)
+    whisper_settings = {
+        'no_speech_threshold': request.form.get('no_speech_threshold'),
+        'logprob_threshold': request.form.get('logprob_threshold'),
+        'compression_ratio_threshold': request.form.get('compression_ratio_threshold'),
+        'condition_on_previous_text': request.form.get('condition_on_previous_text'),
+        'initial_prompt': request.form.get('initial_prompt')
+    }
+    # Curățăm setările None
+    whisper_settings = {k: v for k, v in whisper_settings.items() if v is not None}
+    if not whisper_settings:
+        whisper_settings = None
+
     if model_name not in AVAILABLE_MODELS:
         model_name = DEFAULT_MODEL
     
@@ -2163,7 +2707,8 @@ def upload_file():
         
         process_result = process_normal_file(
             original_path, model, device, language, translation_target,
-            should_adjust_segmentation, process_id, is_video, is_mp4
+            should_adjust_segmentation, process_id, is_video, is_mp4,
+            whisper_settings=whisper_settings
         )
 
         result = process_result['result']
@@ -2373,6 +2918,257 @@ def video_file(filename):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/language_report/<process_id>')
+def language_report(process_id):
+    """Returnează raportul cu limbile detectate pe chunk-uri"""
+    try:
+        process_dir = get_process_dir(process_id)
+        report_path = os.path.join(process_dir, 'language_report.json')
+
+        if os.path.exists(report_path):
+            with open(report_path, 'r', encoding='utf-8') as f:
+                report = json.load(f)
+            return jsonify(report)
+        else:
+            return jsonify({'error': 'Raportul nu a fost găsit'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/projects')
+def list_projects():
+    """Listează toate proiectele disponibile pe server"""
+    projects = []
+    try:
+        if not os.path.exists(app.config['UPLOAD_FOLDER']):
+            return jsonify([])
+
+        for folder in os.listdir(app.config['UPLOAD_FOLDER']):
+            if folder.startswith('process_'):
+                process_id = folder.replace('process_', '')
+                process_dir = os.path.join(app.config['UPLOAD_FOLDER'], folder)
+                project_file = os.path.join(process_dir, 'project.json')
+
+                if os.path.exists(project_file):
+                    with open(project_file, 'r', encoding='utf-8') as f:
+                        meta = json.load(f)
+                        projects.append(meta)
+                else:
+                    # Fallback dacă nu are project.json
+                    projects.append({
+                        'project_name': f"Proiect {process_id}",
+                        'process_id': process_id,
+                        'created_at': "Necunoscut"
+                    })
+
+        # Sortăm după data creării (descrescător)
+        projects.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        return jsonify(projects)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/rename_project/<process_id>', methods=['POST'])
+def rename_project(process_id):
+    """Redenumește un proiect existent"""
+    try:
+        data = request.get_json()
+        new_name = data.get('name')
+        if not new_name:
+            return jsonify({'error': 'Numele nou lipsește'}), 400
+
+        process_dir = get_process_dir(process_id)
+        project_file = os.path.join(process_dir, 'project.json')
+
+        if os.path.exists(project_file):
+            with open(project_file, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+
+            meta['project_name'] = new_name
+
+            with open(project_file, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+
+            return jsonify({'success': True, 'project_name': new_name})
+        else:
+            # Creăm un project.json nou dacă nu există
+            meta = {
+                'project_name': new_name,
+                'process_id': process_id,
+                'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            with open(project_file, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+            return jsonify({'success': True, 'project_name': new_name})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/load_project/<process_id>')
+def load_project(process_id):
+    """Încarcă un proiect în sesiunea curentă"""
+    try:
+        process_dir = get_process_dir(process_id)
+        project_file = os.path.join(process_dir, 'project.json')
+
+        if not os.path.exists(process_dir):
+            return jsonify({'error': 'Proiectul nu există'}), 404
+
+        # Setăm process_id în sesiune
+        session['process_id'] = process_id
+
+        meta = {}
+        if os.path.exists(project_file):
+            with open(project_file, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+
+        # Verificăm ce fișiere avem
+        has_video = os.path.exists(os.path.join(app.config['UPLOAD_FOLDER'], f'video_playback_{process_id}.mp4'))
+        has_original = os.path.exists(os.path.join(process_dir, 'original_segments.json'))
+
+        # Returnăm metadatele pentru a inițializa UI-ul
+        return jsonify({
+            'success': True,
+            'process_id': process_id,
+            'metadata': meta,
+            'has_video': has_video,
+            'has_original_segments': has_original
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/export_project/<process_id>')
+def export_project(process_id):
+    """Exportă proiectul ca fișier .stum (ZIP)"""
+    try:
+        process_dir = get_process_dir(process_id)
+        if not os.path.exists(process_dir):
+            return jsonify({'error': 'Proiectul nu există'}), 404
+
+        memory_file = io.BytesIO()
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Adăugăm fișierele din folderul procesului
+            for root, dirs, files in os.walk(process_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, process_dir)
+                    zf.write(file_path, arcname)
+
+            # Adăugăm fișierele de playback din folderul de upload-uri
+            for f in os.listdir(app.config['UPLOAD_FOLDER']):
+                if process_id in f and not os.path.isdir(os.path.join(app.config['UPLOAD_FOLDER'], f)):
+                    # Evităm să adăugăm folderul procesului din nou dacă suntem în upload folder
+                    if not f.startswith('process_'):
+                        zf.write(os.path.join(app.config['UPLOAD_FOLDER'], f), f"media/{f}")
+
+        memory_file.seek(0)
+
+        # Obținem numele proiectului pentru filename
+        project_name = f"project_{process_id}"
+        project_file = os.path.join(process_dir, 'project.json')
+        if os.path.exists(project_file):
+            with open(project_file, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+                project_name = meta.get('project_name', project_name)
+
+        # Securizăm numele fișierului
+        safe_name = "".join([c for c in project_name if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
+
+        return send_file(
+            memory_file,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f"{safe_name}.stum"
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/import_project', methods=['POST'])
+def import_project():
+    """Importă un proiect dintr-un fișier .stum (ZIP)"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'Niciun fișier trimis'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'Nume fișier gol'}), 400
+
+        # Generăm un nou process_id pentru import
+        new_process_id = str(uuid.uuid4())[:8]
+        process_dir = get_process_dir(new_process_id)
+        os.makedirs(process_dir, exist_ok=True)
+
+        with zipfile.ZipFile(file, 'r') as zf:
+            # Extragem totul
+            zf.extractall(process_dir)
+
+            # Mutăm fișierele media înapoi în folderul de upload-uri dacă există
+            media_dir = os.path.join(process_dir, 'media')
+            if os.path.exists(media_dir):
+                for f in os.listdir(media_dir):
+                    # Redenumim fișierul media cu noul process_id dacă e cazul
+                    # Dar e mai bine să păstrăm structura sau să actualizăm referințele
+                    old_path = os.path.join(media_dir, f)
+
+                    # Detectăm tipul de fișier media și îl redenumim
+                    new_filename = f
+                    if 'video_playback_' in f:
+                        ext = f.split('.')[-1]
+                        new_filename = f"video_playback_{new_process_id}.{ext}"
+                    elif 'preview_' in f:
+                        ext = f.split('.')[-1]
+                        new_filename = f"preview_{new_process_id}.{ext}"
+
+                    shutil.move(old_path, os.path.join(app.config['UPLOAD_FOLDER'], new_filename))
+
+                shutil.rmtree(media_dir)
+
+        # Actualizăm project.json cu noul process_id
+        project_file = os.path.join(process_dir, 'project.json')
+        if os.path.exists(project_file):
+            with open(project_file, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+
+            meta['process_id'] = new_process_id
+
+            with open(project_file, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+
+        session['process_id'] = new_process_id
+        return jsonify({
+            'success': True,
+            'process_id': new_process_id,
+            'message': 'Proiect importat cu succes'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/delete_project/<process_id>', methods=['DELETE'])
+def delete_project(process_id):
+    """Șterge un proiect complet"""
+    try:
+        process_dir = get_process_dir(process_id)
+        if os.path.exists(process_dir):
+            import shutil
+            shutil.rmtree(process_dir)
+
+            # Ștergem și fișierele din uploads
+            for f in os.listdir(app.config['UPLOAD_FOLDER']):
+                if process_id in f:
+                    try:
+                        os.remove(os.path.join(app.config['UPLOAD_FOLDER'], f))
+                    except:
+                        pass
+
+            if session.get('process_id') == process_id:
+                session.pop('process_id', None)
+
+            return jsonify({'success': True})
+        else:
+            return jsonify({'error': 'Proiectul nu există'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/check_video/<process_id>')
 def check_video(process_id):
     """Verifică dacă există un fișier video pentru preview"""
@@ -2390,6 +3186,172 @@ def check_video(process_id):
         return jsonify({'success': False})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+def background_llm_task(ai_task_id, parent_process_id, prompt, segments, is_translated, target_lang):
+    """Task de background pentru procesarea LLM în batch-uri"""
+    try:
+        update_task_status(ai_task_id, 'processing', 5, 'Se inițializează asistentul AI...')
+
+        # Încărcăm LLM
+        llm = load_llm()
+        if not llm:
+            update_task_status(ai_task_id, 'error', message='Modelul LLM nu este disponibil pe server.')
+            return
+
+        batch_size = 20 # Procesăm batch-uri mici pentru a evita timeout și a menține controlul
+        all_segments = segments.copy()
+        updated_count = 0
+        total_batches = math.ceil(len(segments) / batch_size)
+
+        system_prompt = (
+            "Ești un asistent expert în editarea subtitrărilor. "
+            "Vei primi o listă de segmente sub forma [ID] Text. "
+            "Sarcina ta este să modifici/corectezi textul conform instrucțiunilor utilizatorului, "
+            "păstrând formatul [ID] Text pe fiecare linie. "
+            "Păstrează numerotarea segmentelor. "
+            "NU adăuga explicații, comentarii sau alte texte. Doar lista modificată."
+        )
+
+        for i in range(0, len(segments), batch_size):
+            batch = segments[i : i + batch_size]
+            current_batch_num = (i // batch_size) + 1
+
+            text_to_process = ""
+            for seg in batch:
+                text_to_process += f"[{seg['id']}] {seg['text']}\n"
+
+            user_input = f"Instrucțiuni: {prompt}\n\nSegmente de procesat:\n{text_to_process}"
+
+            print(f"🤖 LLM procesează batch {current_batch_num}/{total_batches} ({len(batch)} segmente)...")
+
+            batch_start = time.time()
+            with gpu_processing_lock:
+                response = llm.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_input}
+                    ],
+                    temperature=0.2,
+                    max_tokens=4096
+                )
+            batch_time = time.time() - batch_start
+
+            llm_text = response['choices'][0]['message']['content'].strip()
+
+            # Raportăm progresul și viteza
+            progress = int((current_batch_num / total_batches) * 100)
+            tokens = response.get('usage', {}).get('completion_tokens', 0)
+            tps = tokens / batch_time if batch_time > 0 else 0
+            llm_mode = "CUDA" if getattr(llm, 'n_gpu_layers', 0) != 0 else "CPU"
+
+            update_task_status(ai_task_id, 'processing', progress,
+                               f'AI procesează batch {current_batch_num}/{total_batches} ({tps:.1f} t/s)...',
+                               llm_tps=round(tps, 1), llm_mode=llm_mode)
+
+            # Parsăm batch-ul curent (mai robust)
+            import re
+            lines = llm_text.split('\n')
+            for line in lines:
+                try:
+                    # Căutăm formatul [ID] Text sau ID. Text
+                    match = re.search(r'\[(\d+)\]\s*(.*)', line)
+                    if not match:
+                        match = re.search(r'^(\d+)[\.\)]\s*(.*)', line)
+
+                    if match:
+                        seg_id = int(match.group(1))
+                        new_text = match.group(2).strip()
+
+                        if not new_text: continue
+
+                        # Căutăm segmentul în toate segmentele
+                        segment = next((s for s in all_segments if s['id'] == seg_id), None)
+                        if segment:
+                            segment['text'] = new_text
+                            updated_count += 1
+                except:
+                    continue
+
+            # Mică pauză pentru status update
+            time.sleep(0.5)
+
+        # La final salvăm rezultatul în directorul părintelui (proiectul)
+        process_dir = get_process_dir(parent_process_id)
+        if not process_dir:
+            raise ValueError(f"Directorul proiectului {parent_process_id} nu a fost găsit.")
+
+        # Re-generăm și SRT pentru ca schimbările să fie vizibile imediat la descărcare
+        if is_translated and target_lang:
+            # Traducere AI
+            json_filename = f"translated_segments_ai_{target_lang}.json"
+            srt_filename = f"transcription_{parent_process_id}_ai_{target_lang}.srt"
+        else:
+            # Corectare Original
+            json_filename = "original_segments.json"
+            srt_filename = f"transcription_{parent_process_id}.srt"
+
+        # Salvăm JSON
+        with open(os.path.join(process_dir, json_filename), 'w', encoding='utf-8') as f:
+            json.dump({'segments': all_segments}, f, ensure_ascii=False, indent=2)
+
+        # Salvăm SRT
+        srt_path = os.path.join(process_dir, srt_filename)
+        srt_segments = []
+        for seg in all_segments:
+            srt_segments.append({
+                'start': seg['start'],
+                'end': seg['end'],
+                'text': seg['text']
+            })
+        write_srt(srt_segments, srt_path)
+
+        final_result = {
+            'success': True,
+            'segments': all_segments,
+            'updated_count': updated_count,
+            'is_translated': is_translated,
+            'target_lang': target_lang,
+            'message': f'AI a finalizat procesarea. {updated_count} segmente actualizate.'
+        }
+
+        update_task_status(ai_task_id, 'completed', 100, 'AI a finalizat procesarea!', final_result)
+
+    except Exception as e:
+        print(f"✗ Eroare în background_llm_task: {traceback.format_exc()}")
+        update_task_status(ai_task_id, 'error', message=str(e))
+
+@app.route('/api/llm_process', methods=['POST'])
+def api_llm_process():
+    """Inițiază procesarea subtitrărilor folosind LLM în background"""
+    try:
+        data = request.get_json()
+        prompt = data.get('prompt')
+        segments = data.get('segments', [])
+        parent_process_id = data.get('process_id') # ID-ul proiectului
+        is_translated = data.get('is_translated', False)
+        target_lang = data.get('target_lang')
+
+        if not prompt:
+            return jsonify({'error': 'Prompt-ul lipsește'}), 400
+        if not segments:
+            return jsonify({'error': 'Nu există segmente de procesat'}), 400
+
+        # Generăm un nou ID pentru task-ul AI (bazat pe cel al proiectului)
+        ai_task_id = f"ai_{parent_process_id}_{str(uuid.uuid4())[:4]}"
+
+        # Setează starea inițială
+        update_task_status(ai_task_id, 'queued', 0, 'Sarcina AI a fost adăugată în coadă...')
+
+        # Lansează task-ul în background
+        thread = threading.Thread(target=background_llm_task, args=(
+            ai_task_id, parent_process_id, prompt, segments, is_translated, target_lang
+        ))
+        thread.start()
+
+        return jsonify({'success': True, 'process_id': ai_task_id})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/segments_json/<process_id>/<filename>')
 def segments_json(process_id, filename):
@@ -2465,85 +3427,30 @@ def api_translate_segments():
 
 @app.route('/translate_existing', methods=['POST'])
 def translate_existing():
-    """Traduce segmentele existente (din sesiune) într-o nouă limbă"""
+    """Traduce segmentele existente într-o nouă limbă (asincron)"""
     try:
         data = request.get_json()
         target_lang = data.get('target_lang')
+        process_id = session.get('process_id')
         
+        if not process_id:
+            return jsonify({'error': 'Nicio sesiune activă. Încarcă un fișier mai întâi.'}), 400
+
         if not target_lang or target_lang not in TRANSLATION_LANGUAGES:
             return jsonify({'error': 'Limbă țintă invalidă'}), 400
         
-        original_segments = session.get('original_segments', [])
-        detected_language = session.get('detected_language', 'en')
-        
-        if not original_segments:
-            return jsonify({'error': 'Nu există segmente în sesiune. Încarcă un fișier mai întâi.'}), 400
-        
-        whisper_segments = []
-        for seg in original_segments:
-            whisper_segments.append({
-                'start': seg['start'],
-                'end': seg['end'],
-                'text': seg['text']
-            })
-        
-        translated_segments = translate_segments(whisper_segments, detected_language, target_lang)
-        
-        formatted_segments = []
-        for i, segment in enumerate(translated_segments):
-            formatted_segments.append({
-                'id': i + 1,
-                'start': segment['start'],
-                'end': segment['end'],
-                'text': segment['text'],
-                'start_formatted': format_timestamp(segment['start']),
-                'end_formatted': format_timestamp(segment['end']),
-                'duration': segment['end'] - segment['start'],
-                'char_count': len(segment['text']),
-                'original': False,
-                'source_language': detected_language,
-                'target_language': target_lang
-            })
-        
-        multiple_translations = session.get('multiple_translations', {})
-        multiple_translations[target_lang] = formatted_segments
-        session['multiple_translations'] = multiple_translations
-        
-        process_id = session.get('process_id', str(uuid.uuid4())[:8])
-        process_dir = os.path.join(app.config['UPLOAD_FOLDER'], f'process_{process_id}')
-        os.makedirs(process_dir, exist_ok=True)
-        
-        base_name = f"translation_{detected_language}_{target_lang}"
-        srt_filename = f"{base_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.srt"
-        srt_path = os.path.join(process_dir, srt_filename)
-        
-        srt_segments = []
-        for seg in formatted_segments:
-            srt_segments.append({
-                'start': seg['start'],
-                'end': seg['end'],
-                'text': seg['text']
-            })
-        
-        if not write_srt(srt_segments, srt_path):
-            raise Exception("Eroare la generarea fișierului SRT tradus")
+        # Pornim procesarea în background
+        thread = threading.Thread(target=background_translation_task, args=(process_id, target_lang))
+        thread.start()
         
         return jsonify({
             'success': True,
-            'segments': formatted_segments,
-            'source_language': detected_language,
-            'target_language': target_lang,
-            'segment_count': len(formatted_segments),
-            'translation_quality': 'high',
-            'srt_filename': srt_filename,
-            'process_id': process_id,
-            'multiple_translations_count': len(multiple_translations)
+            'message': 'Traducerea a început în background',
+            'process_id': process_id
         })
-        
     except Exception as e:
-        import traceback
-        print(f"Eroare traducere existentă: {traceback.format_exc()}")
-        return jsonify({'error': f'Eroare la traducere: {str(e)}'}), 500
+        print(f"Eroare la inițiere traducere: {str(e)}")
+        return jsonify({'error': f'Eroare: {str(e)}'}), 500
 
 
 @app.route('/get_translation_capabilities')
@@ -2556,27 +3463,17 @@ def get_translation_capabilities():
         
         for target_code, target_name in TRANSLATION_LANGUAGES.items():
             if target_code != current_lang:
-                marian_key = f"{current_lang}-{target_code}"
-                reverse_marian_key = f"{target_code}-{current_lang}"
-                
-                model_type = 'nllb'
-                if marian_key in TRANSLATION_MODELS_CONFIG['marian']['models']:
-                    model_type = 'marian'
-                elif reverse_marian_key in TRANSLATION_MODELS_CONFIG['marian']['models']:
-                    model_type = 'marian'
-                
                 available_targets.append({
                     'code': target_code,
                     'name': target_name,
-                    'model_type': model_type,
-                    'quality': 'high' if model_type == 'marian' else 'good'
+                    'model_type': 'mistral-ai',
+                    'quality': 'high'
                 })
         
         return jsonify({
             'current_language': current_lang,
             'available_targets': available_targets,
-            'total_languages': len(TRANSLATION_LANGUAGES),
-            'high_quality_models': list(TRANSLATION_MODELS_CONFIG['marian']['models'].keys())
+            'total_languages': len(TRANSLATION_LANGUAGES)
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -2772,15 +3669,20 @@ def cleanup():
         with model_lock:
             loaded_models.clear()
             translation_models.clear()
+
+            global llm_instance
+            with llm_lock:
+                llm_instance = None
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
             
         return jsonify({
             'success': True,
-            'message': 'Memorie curățată',
+            'message': 'Memorie curățată (inclusiv LLM)',
             'models_loaded': len(loaded_models),
-            'translation_models_loaded': len(translation_models)
+            'llm_loaded': False
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500

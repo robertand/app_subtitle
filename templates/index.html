@@ -981,6 +981,39 @@
             line-height: 1.4;
         }
         
+        .delete-segment-btn {
+            color: #e53e3e;
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 2px 5px;
+            border-radius: 4px;
+            transition: all 0.2s;
+            font-size: 0.9em;
+        }
+
+        .delete-segment-btn:hover {
+            background: #fed7d7;
+            transform: scale(1.1);
+        }
+
+        .editable-time {
+            cursor: text;
+            padding: 0 4px;
+            border-radius: 4px;
+            background: rgba(102, 126, 234, 0.1);
+            border-bottom: 1px dashed #667eea;
+            display: inline-block;
+            min-width: 80px;
+            text-align: center;
+        }
+
+        .editable-time:focus {
+            background: white;
+            outline: 2px solid #667eea;
+            border-bottom: none;
+        }
+
         .full-text {
             background: #f8f9ff;
             padding: 15px;
@@ -1262,6 +1295,172 @@
             flex: 1;
         }
         
+        /* Project Library */
+        .project-library {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            display: none; /* Hidden until projects are loaded */
+        }
+
+        .project-library-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 10px;
+        }
+
+        .project-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 15px;
+            max-height: 400px;
+            overflow-y: auto;
+            padding: 5px;
+        }
+
+        .project-card {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 15px;
+            transition: all 0.2s;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .project-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .project-card.active {
+            border-left: 4px solid #667eea;
+            background: #ebf4ff;
+        }
+
+        .project-card h4 {
+            margin: 0 0 5px 0;
+            color: #2d3748;
+            font-size: 1em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding-right: 20px;
+        }
+
+        .project-card .meta {
+            font-size: 0.8em;
+            color: #718096;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .project-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .project-btn {
+            padding: 4px 8px;
+            font-size: 0.75em;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: opacity 0.2s;
+        }
+
+        .project-btn.delete { background: #fed7d7; color: #c53030; }
+        .project-btn.export { background: #c6f6d5; color: #22543d; }
+        .project-btn.rename { background: #bee3f8; color: #2b6cb0; }
+
+        .project-btn:hover { opacity: 0.8; }
+
+        /* Main Project Controls in Result Area */
+        .main-project-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        /* AI Assistant Section */
+        .ai-assistant-section {
+            background: #fdf2f8;
+            border-radius: 15px;
+            padding: 20px;
+            margin: 25px 0;
+            border: 2px solid #f472b6;
+            animation: fadeIn 0.5s;
+        }
+
+        .ai-assistant-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            color: #db2777;
+        }
+
+        .ai-prompt-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .ai-prompt-textarea {
+            width: 100%;
+            min-height: 80px;
+            padding: 12px;
+            border: 2px solid #fbcfe8;
+            border-radius: 10px;
+            font-size: 0.95em;
+            resize: vertical;
+        }
+
+        .ai-prompt-textarea:focus {
+            outline: none;
+            border-color: #f472b6;
+            box-shadow: 0 0 0 3px rgba(244, 114, 182, 0.1);
+        }
+
+        .ai-btn {
+            background: linear-gradient(135deg, #ec4899 0%, #db2777 100%);
+            color: white;
+            border: none;
+            padding: 10px 25px;
+            border-radius: 50px;
+            cursor: pointer;
+            font-weight: bold;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            align-self: flex-start;
+            transition: all 0.2s;
+        }
+
+        .ai-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(219, 39, 119, 0.3);
+        }
+
+        .ai-btn:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
         /* Debug button */
         .debug-btn {
             background: #805ad5;
@@ -1370,6 +1569,25 @@
     <div class="container">
         <h1><i class="fas fa-closed-captioning"></i> Transcriere Video/Audio cu Upload Segmentat</h1>
         <p class="subtitle">Suportă fișiere mari până la 50GB • Upload în bucăți • Procesare optimizată</p>
+
+        <!-- Project Library -->
+        <div class="project-library" id="projectLibrary">
+            <div class="project-library-header">
+                <h3><i class="fas fa-folder-open"></i> Biblioteca de Proiecte</h3>
+                <div style="display: flex; gap: 10px;">
+                    <button class="project-btn rename" onclick="document.getElementById('importFile').click()">
+                        <i class="fas fa-file-import"></i> Import .stum
+                    </button>
+                    <input type="file" id="importFile" style="display: none;" accept=".stum" onchange="importProject(event)">
+                    <button class="project-btn" onclick="loadProjects()" title="Actualizează">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="project-grid" id="projectGridList">
+                <!-- Projects will be listed here -->
+            </div>
+        </div>
         
         <!-- System Info -->
         <div class="system-info" id="systemInfo">
@@ -1388,6 +1606,10 @@
             <div class="info-item">
                 <i class="fas fa-clock"></i>
                 <span id="timeoutInfo">Timeout: 2 ore</span>
+            </div>
+            <div class="info-item">
+                <i class="fas fa-robot"></i>
+                <span id="aiInfo">AI: Mistral Small</span>
             </div>
         </div>
 
@@ -1494,8 +1716,8 @@
             </div>
         </div>
         
-        <!-- Translation Panel -->
-        <div class="translation-panel" id="translationPanel">
+        <!-- Translation Panel (Hidden by default for initial transcription) -->
+        <div class="translation-panel" id="translationPanel" style="display: none;">
             <div class="translation-header">
                 <h3><i class="fas fa-language"></i> Traducere Subtitrări</h3>
                 <button class="translation-toggle" id="toggleTranslation">
@@ -1513,8 +1735,8 @@
                 </div>
                 
                 <div class="translation-status" id="translationStatus">
-                    <i class="fas fa-sync-alt fa-spin"></i>
-                    <span>Se încarcă modelele de traducere...</span>
+                    <i class="fas fa-robot"></i>
+                    <span>Sistem de Traducere AI (Mistral) activ</span>
                 </div>
             </div>
             
@@ -1581,6 +1803,66 @@
                             <span class="control-value" id="maxCharsValue">80</span>
                         </label>
                         <input type="range" id="maxChars" min="40" max="120" step="1" value="80">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Whisper Advanced Settings -->
+            <div class="settings-card">
+                <h3><i class="fas fa-sliders-h"></i> Parametri Avansați Whisper</h3>
+
+                <div class="button-group" style="margin-bottom: 15px;">
+                    <button class="btn btn-secondary" onclick="setRomanianOptimization()" style="padding: 8px 15px; font-size: 0.85em; background: #667eea;">
+                        <i class="fas fa-magic"></i> Optimizare Română
+                    </button>
+                    <button class="btn btn-secondary" onclick="setMusicMode()" style="padding: 8px 15px; font-size: 0.85em;">
+                        <i class="fas fa-music"></i> Mod Muzică/Ambianță
+                    </button>
+                    <button class="btn btn-secondary" onclick="resetWhisperSettings()" style="padding: 8px 15px; font-size: 0.85em;">
+                        <i class="fas fa-undo"></i> Reset
+                    </button>
+                </div>
+
+                <div class="segmentation-controls">
+                    <div class="control-group">
+                        <label>
+                            <span>No Speech Threshold (default 0.6):</span>
+                            <span class="control-value" id="noSpeechThresholdValue">0.60</span>
+                        </label>
+                        <input type="range" id="noSpeechThreshold" name="no_speech_threshold" min="0.0" max="1.0" step="0.05" value="0.60">
+                        <small style="color: #718096; font-size: 0.75em;">Mai MARE = mai puțin probabil să sară peste segmente (evită skipping).</small>
+                    </div>
+
+                    <div class="control-group">
+                        <label>
+                            <span>Logprob Threshold (default -1.0):</span>
+                            <span class="control-value" id="logprobThresholdValue">-1.0</span>
+                        </label>
+                        <input type="range" id="logprobThreshold" name="logprob_threshold" min="-3.0" max="0.0" step="0.1" value="-1.0">
+                        <small style="color: #718096; font-size: 0.75em;">Mai mic = acceptă calitate audio mai slabă.</small>
+                    </div>
+
+                    <div class="control-group">
+                        <label>
+                            <span>Compression Ratio (default 2.4):</span>
+                            <span class="control-value" id="compressionRatioValue">2.4</span>
+                        </label>
+                        <input type="range" id="compressionRatio" name="compression_ratio_threshold" min="1.0" max="5.0" step="0.1" value="2.4">
+                        <small style="color: #718096; font-size: 0.75em;">Mai mare = evită skipping pentru muzică repetitivă.</small>
+                    </div>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="conditionOnPreviousText" name="condition_on_previous_text" checked>
+                        <label for="conditionOnPreviousText">Condition on previous text (Recomandat: ON)</label>
+                    </div>
+
+                    <div class="control-group" style="margin-top: 15px;">
+                        <label for="initialPrompt">
+                            <span>Prompt Inițial (context):</span>
+                        </label>
+                        <input type="text" id="initialPrompt" name="initial_prompt" placeholder="Ex: Interviu despre tehnologie..."
+                               style="width: 100%; padding: 8px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 0.9em;">
+                        <small style="color: #718096; font-size: 0.75em;">Ajută Whisper cu terminologia sau contextul.</small>
                     </div>
                 </div>
             </div>
@@ -1746,6 +2028,29 @@
             
             <h3><i class="fas fa-list"></i> Segmente cu timecode:</h3>
             <div class="segments" id="segmentsList"></div>
+
+            <!-- AI Assistant Section -->
+            <div class="ai-assistant-section" id="aiAssistantSection" style="display: none;">
+                <div class="ai-assistant-header">
+                    <h3><i class="fas fa-robot"></i> Asistent AI (Mistral Small)</h3>
+                    <span style="font-size: 0.8em; color: #718096;">Corectează și modifică subtitrările cu limbaj natural</span>
+                </div>
+                <div class="ai-prompt-container">
+                    <textarea id="aiPrompt" class="ai-prompt-textarea"
+                              placeholder="Ex: Corectează greșelile gramaticale... sau: Reformulează mai formal... sau: Asigură-te că numele 'Whisper' este scris corect peste tot."></textarea>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button class="ai-btn" id="aiProcessBtn" onclick="processWithAI(false)">
+                            <i class="fas fa-magic"></i> Corectează (Original)
+                        </button>
+                        <button class="ai-btn" id="aiTranslateBtn" onclick="processWithAI(true)" style="background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);">
+                            <i class="fas fa-language"></i> Traducere AI
+                        </button>
+                    </div>
+                    <div id="aiLoading" style="display: none; font-size: 0.9em; color: #db2777;">
+                        <i class="fas fa-spinner fa-spin"></i> Mistral procesează segmentele... Te rugăm să aștepți.
+                    </div>
+                </div>
+            </div>
             
             <div id="transcriptionButtons" class="button-group">
                 <button class="btn" id="saveEditsBtn" onclick="saveEdits()" style="background: #805ad5;">
@@ -1754,11 +2059,27 @@
                 <button class="btn download-btn" onclick="downloadSRT()">
                     <i class="fas fa-download"></i> Descarcă Fișier SRT
                 </button>
+                <button class="btn btn-secondary" onclick="retranscribe()" id="retranscribeBtn">
+                    <i class="fas fa-redo"></i> Refă Transcrierea
+                </button>
                 <button class="btn download-btn" onclick="downloadTranslatedSRT()" id="mainDownloadTranslatedBtn" style="display: none;">
                     <i class="fas fa-language"></i> Descarcă SRT Tradus
                 </button>
                 <button class="btn btn-secondary" onclick="playWithSubtitles()" id="playWithSubtitlesBtn">
                     <i class="fas fa-film"></i> Play cu Subtitrări
+                </button>
+            </div>
+
+            <!-- Project Management Actions -->
+            <div class="main-project-controls">
+                <button class="project-btn rename" onclick="renameCurrentProject()">
+                    <i class="fas fa-edit"></i> Redenumește Proiectul
+                </button>
+                <button class="project-btn export" onclick="exportCurrentProject()">
+                    <i class="fas fa-file-export"></i> Descarcă .stum (Proiect Complet)
+                </button>
+                <button class="project-btn" onclick="loadProjects(); document.getElementById('projectLibrary').scrollIntoView({behavior: 'smooth'})">
+                    <i class="fas fa-folder-open"></i> Înapoi la Bibliotecă
                 </button>
             </div>
         </div>
@@ -1911,6 +2232,7 @@
             loadTranslationLanguages();
             loadSystemInfo();
             loadModelStatus();
+            loadProjects();
             
             // Ascultă evenimente pentru controale
             minDurationSlider.addEventListener('input', updateSegmentationSettings);
@@ -1920,6 +2242,21 @@
             languageSelect.addEventListener('change', updateLanguage);
             translationSelect.addEventListener('change', updateTranslationTarget);
             toggleTranslationBtn.addEventListener('click', toggleTranslation);
+
+            // Listeners pentru Whisper settings
+            const noSpeechThreshold = document.getElementById('noSpeechThreshold');
+            const logprobThreshold = document.getElementById('logprobThreshold');
+            const compressionRatio = document.getElementById('compressionRatio');
+
+            noSpeechThreshold.addEventListener('input', () => {
+                document.getElementById('noSpeechThresholdValue').textContent = parseFloat(noSpeechThreshold.value).toFixed(2);
+            });
+            logprobThreshold.addEventListener('input', () => {
+                document.getElementById('logprobThresholdValue').textContent = parseFloat(logprobThreshold.value).toFixed(1);
+            });
+            compressionRatio.addEventListener('input', () => {
+                document.getElementById('compressionRatioValue').textContent = parseFloat(compressionRatio.value).toFixed(1);
+            });
             
             // Inițializează controalele de segmentare
             minDurationSlider.value = segmentationSettings.min_duration;
@@ -1996,6 +2333,108 @@
                 }
             }, 1000);
         });
+
+        // Retranscriere cu noi parametri
+        async function retranscribe() {
+            if (!processId) {
+                showToast('Nu există o sesiune activă', 'error');
+                return;
+            }
+
+            if (!confirm('Ești sigur că vrei să refaci transcrierea? Această acțiune va suprascrie rezultatele actuale.')) {
+                return;
+            }
+
+            try {
+                const retranscribeBtn = document.getElementById('retranscribeBtn');
+                retranscribeBtn.disabled = true;
+                retranscribeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Se re-procesează...';
+
+                // Ascunde rezultatele și arată loading
+                resultContainer.style.display = 'none';
+                loading.style.display = 'block';
+                progressContainer.style.display = 'block';
+                updateProgress(5, 'Se inițializează re-transcrierea...');
+
+                const response = await fetch(`/api/retranscribe/${processId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: currentModel,
+                        language: currentLanguage,
+                        translation_target: translationTarget || '',
+                        adjust_segmentation: adjustSegmentationCheckbox.checked,
+                        whisper_settings: {
+                            no_speech_threshold: document.getElementById('noSpeechThreshold').value,
+                            logprob_threshold: document.getElementById('logprobThreshold').value,
+                            compression_ratio_threshold: document.getElementById('compressionRatio').value,
+                            condition_on_previous_text: document.getElementById('conditionOnPreviousText').checked,
+                            initial_prompt: document.getElementById('initialPrompt').value
+                        }
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast('Re-transcrierea a început în background', 'success');
+                    pollTaskStatus(processId);
+                } else {
+                    throw new Error(data.error || 'Eroare la re-transcriere');
+                }
+            } catch (error) {
+                console.error('Eroare la re-transcriere:', error);
+                showError(`Eroare: ${error.message}`);
+                loading.style.display = 'none';
+                resultContainer.style.display = 'block';
+                const retranscribeBtn = document.getElementById('retranscribeBtn');
+                retranscribeBtn.disabled = false;
+                retranscribeBtn.innerHTML = '<i class="fas fa-redo"></i> Refă Transcrierea';
+            }
+        }
+
+        // Setări Whisper
+        function setRomanianOptimization() {
+            document.getElementById('noSpeechThreshold').value = 0.70;
+            document.getElementById('logprobThreshold').value = -1.5;
+            document.getElementById('compressionRatio').value = 2.4;
+            document.getElementById('conditionOnPreviousText').checked = false;
+
+            document.getElementById('noSpeechThresholdValue').textContent = "0.70";
+            document.getElementById('logprobThresholdValue').textContent = "-1.5";
+            document.getElementById('compressionRatioValue').textContent = "2.4";
+
+            showToast('Optimizare Română: Dezactivat "condition_on_previous_text" pentru a evita repetițiile.', 'info');
+        }
+
+        function setMusicMode() {
+            document.getElementById('noSpeechThreshold').value = 0.85;
+            document.getElementById('logprobThreshold').value = -2.0;
+            document.getElementById('compressionRatio').value = 2.8;
+            document.getElementById('conditionOnPreviousText').checked = false;
+
+            document.getElementById('noSpeechThresholdValue').textContent = "0.85";
+            document.getElementById('logprobThresholdValue').textContent = "-2.0";
+            document.getElementById('compressionRatioValue').textContent = "2.8";
+
+            showToast('Mod Muzică activat: Sensibilitate crescută la voce în ambiant', 'info');
+        }
+
+        function resetWhisperSettings() {
+            document.getElementById('noSpeechThreshold').value = 0.60;
+            document.getElementById('logprobThreshold').value = -1.0;
+            document.getElementById('compressionRatio').value = 2.4;
+            document.getElementById('conditionOnPreviousText').checked = true;
+            document.getElementById('initialPrompt').value = '';
+
+            document.getElementById('noSpeechThresholdValue').textContent = "0.60";
+            document.getElementById('logprobThresholdValue').textContent = "-1.0";
+            document.getElementById('compressionRatioValue').textContent = "2.4";
+
+            showToast('Setări Whisper resetate la default', 'info');
+        }
 
         // Restaurează sesiunea anterioară
         async function restoreSession(pid) {
@@ -2216,6 +2655,19 @@
                             statusElement.className = 'model-status';
                             statusElement.title = 'Nu este încărcat';
                         }
+                    }
+                }
+
+                // Update AI status
+                const aiInfo = document.getElementById('aiInfo');
+                if (aiInfo && data.translation_status && data.translation_status['mistral-ai']) {
+                    const mistral = data.translation_status['mistral-ai'];
+                    if (mistral.loaded) {
+                        aiInfo.innerHTML = `AI: Mistral (${mistral.device})`;
+                        aiInfo.style.color = mistral.device === 'CUDA' ? '#48bb78' : '#e67e22';
+                    } else {
+                        aiInfo.innerHTML = 'AI: Mistral (Neîncărcat)';
+                        aiInfo.style.color = '#718096';
                     }
                 }
             } catch (error) {
@@ -2915,7 +3367,14 @@
                         language: currentLanguage,
                         translation_target: translationTarget || '',
                         adjust_segmentation: adjustSegmentationCheckbox.checked,
-                        extract_audio_only: extractAudioOnlyCheckbox.checked
+                        extract_audio_only: extractAudioOnlyCheckbox.checked,
+                        whisper_settings: {
+                            no_speech_threshold: document.getElementById('noSpeechThreshold').value,
+                            logprob_threshold: document.getElementById('logprobThreshold').value,
+                            compression_ratio_threshold: document.getElementById('compressionRatio').value,
+                            condition_on_previous_text: document.getElementById('conditionOnPreviousText').checked,
+                            initial_prompt: document.getElementById('initialPrompt').value
+                        }
                     })
                 });
                 
@@ -2961,6 +3420,10 @@
 
                 if (data.status === 'completed') {
                     console.log('Task completed successfully!');
+                    // Dacă e un rezultat de succes, ascundem avertismentul de heartbeat
+                    if (data.progress === 100) {
+                        updateProgress(100, 'Finalizat!');
+                    }
                     handleProcessingResult(data.result);
                 } else if (data.status === 'error') {
                     console.error('Task reported an error:', data.message);
@@ -2981,9 +3444,13 @@
 
                     // Update progress UI
                     if (data.status === 'processing') {
-                        updateProgress(data.progress || 50, data.message || 'Se procesează...');
+                        let msg = data.message || 'Se procesează...';
+                        if (data.llm_tps) {
+                            msg += ` [${data.llm_tps} t/s | ${data.llm_mode}]`;
+                        }
+                        updateProgress(data.progress || 50, msg);
                         if (uploadStatus) {
-                            uploadStatus.textContent = data.message;
+                            uploadStatus.textContent = msg;
                             uploadStatus.style.color = '#667eea';
                         }
 
@@ -3075,11 +3542,16 @@
             srtFilename = data.filename;
             processId = data.process_id || processId;
 
-            // Fallback: folosim datele din rezultat doar dacă fetch-ul de pe disc a eșuat
-            if (!currentSegments || currentSegments.length === 0) {
-                if (data.segments) currentSegments = data.segments;
+            // Prioritate: folosim datele direct din rezultat dacă sunt disponibile (evităm fetch-uri inutile)
+            if (data.segments) {
+                currentSegments = data.segments;
+                if (data.translation_used) translatedSegments = data.segments;
+                else originalSegments = data.segments;
+            } else if (!currentSegments || currentSegments.length === 0) {
+                // Fallback: folosim alte câmpuri din rezultat dacă fetch-ul de pe disc a eșuat
                 if (data.original_segments) originalSegments = data.original_segments;
                 if (data.translated_segments) translatedSegments = data.translated_segments;
+                currentSegments = translatedSegments || originalSegments;
             }
 
             imagePreviewUrl = data.image_preview_url;
@@ -3087,12 +3559,25 @@
             videoDuration = data.video_duration || data.total_duration;
             isMp4File = data.is_mp4 || false;
             
-            // Resetează traducerile multiple
-            multipleTranslations = {};
-            if (data.is_translated && data.translation_target) {
-                multipleTranslations[data.translation_target] = translatedSegments;
-                currentTranslationLang = data.translation_target;
+            // Actualizează lista de traduceri multiple
+            const usedLang = data.translation_used || data.translation_target;
+            if (data.is_translated && usedLang) {
+                multipleTranslations[usedLang] = currentSegments;
+                currentTranslationLang = usedLang;
+
+                // Păstrăm și numele fișierului SRT dacă există
+                if (data.filename) {
+                    if (!multipleTranslations[usedLang].srt_filename) {
+                        multipleTranslations[usedLang].srt_filename = data.filename;
+                    }
+                }
             }
+            // Reîmprospătează lista din interfață
+            refreshTranslationsList();
+            loadProjects(); // Actualizează biblioteca de proiecte
+
+            // Afișează panoul de traduceri multiple
+            document.getElementById('multipleTranslationsPanel').style.display = 'block';
             
             // Afișează textul complet
             document.getElementById('fullText').textContent = data.full_text;
@@ -3177,17 +3662,221 @@
                 
                 // Arată butonul pentru traduceri multiple
                 showMultipleTranslationsBtn.style.display = 'inline-flex';
+
+                // Arată asistentul AI
+                document.getElementById('aiAssistantSection').style.display = 'block';
             }, 500);
+        }
+
+        // Procesează subtitrările cu AI (Asincron)
+        async function processWithAI(isTranslation) {
+            let prompt = document.getElementById('aiPrompt').value.trim();
+
+            // Dacă este traducere, dar nu am ales limba țintă
+            let targetLang = currentTranslationLang;
+            if (isTranslation) {
+                targetLang = translationSelect.value;
+                if (!targetLang) {
+                    showToast('Selectează o limbă țintă în panoul de traducere!', 'warning');
+                    return;
+                }
+
+                if (!prompt) {
+                    prompt = `Tradu aceste subtitrări în limba ${targetLang}. Păstrează sensul original și folosește un limbaj natural.`;
+                } else {
+                    prompt = `Tradu aceste subtitrări în limba ${targetLang}. Instrucțiuni suplimentare: ${prompt}`;
+                }
+            } else {
+                if (!prompt) {
+                    prompt = "Corectează greșelile gramaticale și de punctuație păstrând limba originală.";
+                }
+            }
+
+            if (!currentSegments || currentSegments.length === 0) {
+                showToast('Nu există segmente de procesat', 'error');
+                return;
+            }
+
+            const aiBtn = document.getElementById('aiProcessBtn');
+            const aiTransBtn = document.getElementById('aiTranslateBtn');
+            const aiLoading = document.getElementById('aiLoading');
+            const aiPrompt = document.getElementById('aiPrompt');
+
+            aiBtn.disabled = true;
+            if (aiTransBtn) aiTransBtn.disabled = true;
+            aiLoading.style.display = 'block';
+            aiPrompt.disabled = true;
+
+            try {
+                showToast('Sarcina AI a fost trimisă...', 'info');
+
+                // Când traducem, trimitem întotdeauna originalSegments ca sursă
+                const segmentsToProcess = isTranslation ? originalSegments : currentSegments;
+
+                const response = await fetch('/api/llm_process', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prompt: prompt,
+                        segments: segmentsToProcess,
+                        process_id: processId,
+                        is_translated: isTranslation,
+                        target_lang: targetLang
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success && data.process_id) {
+                    pollAITaskStatus(data.process_id);
+                } else {
+                    throw new Error(data.error || 'Eroare la inițierea sarcinii AI');
+                }
+            } catch (error) {
+                console.error('Eroare AI:', error);
+                showToast('Eroare AI: ' + error.message, 'error');
+                aiBtn.disabled = false;
+                aiLoading.style.display = 'none';
+                aiPrompt.disabled = false;
+            }
+        }
+
+        // Monitorizează statusul sarcinii AI
+        async function pollAITaskStatus(taskId) {
+            const aiLoading = document.getElementById('aiLoading');
+            const aiBtn = document.getElementById('aiProcessBtn');
+            const aiPrompt = document.getElementById('aiPrompt');
+
+            try {
+                const response = await fetch(`/api/task_status/${taskId}`);
+                const data = await response.json();
+
+                if (data.status === 'completed') {
+                    const result = data.result;
+                    console.log('AI task completed. Segments received:', result.segments.length);
+                    console.log('Updated count:', result.updated_count);
+
+                    currentSegments = result.segments;
+
+                    // Actualizăm memoria locală
+                    if (!currentTranslationLang) {
+                        originalSegments = JSON.parse(JSON.stringify(result.segments));
+                    } else if (currentTranslationLang) {
+                        multipleTranslations[currentTranslationLang] = JSON.parse(JSON.stringify(result.segments));
+                    }
+
+                    displaySegments(currentSegments);
+                    if (result.updated_count > 0) {
+                        showToast(result.message, 'success');
+                    } else {
+                        showToast('AI a terminat, dar nu a putut identifica segmente de actualizat.', 'warning');
+                    }
+
+                    // Actualizăm biblioteca și lista de versiuni
+                    refreshTranslationsList();
+                    loadProjects();
+
+                    // Force a UI refresh for the full text preview as well
+                    const fullText = currentSegments.map(s => s.text).join(' ');
+                    document.getElementById('fullText').textContent = fullText;
+
+                    aiBtn.disabled = false;
+                    if (document.getElementById('aiTranslateBtn')) document.getElementById('aiTranslateBtn').disabled = false;
+                    aiLoading.style.display = 'none';
+                    aiPrompt.disabled = false;
+                } else if (data.status === 'error') {
+                    throw new Error(data.message || 'Eroare necunoscută în timpul procesării AI');
+                } else {
+                    // Update UI with progress message
+                    if (data.message) {
+                        let msg = data.message;
+                        if (data.llm_tps) {
+                            msg += ` <span style="font-size: 0.8em; color: #6366f1;">(${data.llm_tps} t/s | ${data.llm_mode})</span>`;
+                        }
+                        aiLoading.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${msg}`;
+                    }
+                    // Poll again
+                    setTimeout(() => pollAITaskStatus(taskId), 2000);
+                }
+            } catch (error) {
+                console.error('Eroare monitorizare AI:', error);
+                showToast('Eroare monitorizare AI: ' + error.message, 'error');
+                aiBtn.disabled = false;
+                aiLoading.style.display = 'none';
+                aiPrompt.disabled = false;
+            }
         }
         
         // Restul funcțiilor rămân la fel (displaySegments, toggleSegmentsTranslation, etc.)
         // ... (codul rămas este identic cu cel din versiunea anterioară)
         
-        // Actualizează textul segmentului în memoria locală
-        function updateSegmentLocal(id, newText) {
+        // Convertește formatul HH:MM:SS,mmm în secunde
+        function parseTimecode(timeStr) {
+            try {
+                // Suportă formate HH:MM:SS,mmm sau HH:MM:SS.mmm
+                const parts = timeStr.replace(',', '.').split(':');
+                if (parts.length !== 3) return null;
+
+                const hours = parseFloat(parts[0]);
+                const minutes = parseFloat(parts[1]);
+                const seconds = parseFloat(parts[2]);
+
+                if (isNaN(hours) || isNaN(minutes) || isNaN(seconds)) return null;
+
+                return (hours * 3600) + (minutes * 60) + seconds;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Șterge un segment în memoria locală
+        function deleteSegmentLocal(id) {
+            if (!confirm('Ești sigur că vrei să ștergi acest segment?')) return;
+
+            const index = currentSegments.findIndex(s => s.id === id);
+            if (index !== -1) {
+                currentSegments.splice(index, 1);
+
+                // Actualizăm și originalSegments dacă suntem în modul original
+                if (!currentTranslationLang) {
+                    const origIndex = originalSegments.findIndex(s => s.id === id);
+                    if (origIndex !== -1) originalSegments.splice(origIndex, 1);
+                } else {
+                    // Dacă suntem într-o traducere, poate vrem să ștergem și din original?
+                    // Deocamdată ștergem doar din versiunea curentă
+                }
+
+                displaySegments(currentSegments);
+                showToast('Segment șters local. Nu uita să salvezi!', 'info');
+            }
+        }
+
+        // Actualizează un segment în memoria locală
+        function updateSegmentLocal(id, field, newValue) {
             const segment = currentSegments.find(s => s.id === id);
-            if (segment) {
-                segment.text = newText;
+            if (!segment) return;
+
+            if (field === 'text') {
+                segment.text = newValue;
+            } else if (field === 'start_formatted' || field === 'end_formatted') {
+                const seconds = parseTimecode(newValue);
+                if (seconds !== null) {
+                    segment[field] = newValue;
+                    if (field === 'start_formatted') {
+                        segment.start = seconds;
+                        // Actualizăm și atributul data-start pentru sync
+                        const el = document.querySelector(`.segment[data-id="${id}"]`);
+                        if (el) el.setAttribute('data-start', seconds);
+                    } else {
+                        segment.end = seconds;
+                        const el = document.querySelector(`.segment[data-id="${id}"]`);
+                        if (el) el.setAttribute('data-end', seconds);
+                    }
+                    console.log(`Updated segment ${id} ${field} to ${newValue} (${seconds}s)`);
+                } else {
+                    console.warn(`Invalid timecode format: ${newValue}`);
+                    showToast('Format timp invalid. Folosiți HH:MM:SS,mmm', 'error');
+                }
             }
         }
 
@@ -3258,13 +3947,23 @@
                 }
 
                 segmentsHtml += `
-                    <div class="segment" data-start="${segment.start}" data-end="${segment.end}">
+                    <div class="segment" data-id="${segment.id}" data-start="${segment.start}" data-end="${segment.end}">
                         <div class="segment-header">
                             <span><i class="fas fa-hashtag"></i> #${segment.id}</span>
-                            <span><i class="far fa-clock"></i> ${segment.start_formatted} → ${segment.end_formatted}</span>
-                            ${isTranslated ? `<span class="language-badge target">${targetLang}</span>` : ''}
+                            <span>
+                                <i class="far fa-clock"></i>
+                                <span contenteditable="true" class="editable-time" onblur="updateSegmentLocal(${segment.id}, 'start_formatted', this.innerText)">${segment.start_formatted}</span>
+                                →
+                                <span contenteditable="true" class="editable-time" onblur="updateSegmentLocal(${segment.id}, 'end_formatted', this.innerText)">${segment.end_formatted}</span>
+                            </span>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                ${isTranslated ? `<span class="language-badge target">${targetLang}</span>` : ''}
+                                <button class="delete-segment-btn" onclick="deleteSegmentLocal(${segment.id})" title="Șterge segmentul">
+                                    <i class="fas fa-trash-alt"></i>
+                                </button>
+                            </div>
                         </div>
-                        <div class="segment-text" contenteditable="true" onblur="updateSegmentLocal(${segment.id}, this.innerText)">${segment.text}</div>
+                        <div class="segment-text" contenteditable="true" onblur="updateSegmentLocal(${segment.id}, 'text', this.innerText)">${segment.text}</div>
                         ${isTranslated && originalText ? `
                             <div class="segment-translation" style="margin-top: 5px; opacity: 0.7; font-size: 0.9em; border-top: 1px solid #eee; padding-top: 5px;">
                                 <div style="color: #718096;"><i class="fas fa-quote-left"></i> ${originalText}</div>
@@ -3345,8 +4044,8 @@
                             html += `
                                 <div class="translation-item ${currentTranslationLang === trans.target_language ? 'active' : ''}" 
                                      onclick="loadTranslation('${trans.target_language}')">
-                                    <span class="translation-lang">${trans.target_language}</span>
-                                    <span>(${trans.target_name})</span>
+                                    <span class="translation-lang" style="${trans.is_ai ? 'color: #6366f1;' : ''}">${trans.target_language}</span>
+                                    <span>(${trans.display_name || trans.target_name})</span>
                                     <button class="translation-action" onclick="downloadTranslationSRT('${trans.target_language}', event)">
                                         <i class="fas fa-download"></i>
                                     </button>
@@ -3378,6 +4077,9 @@
 
                 downloadTranslatedBtn.style.display = 'none';
                 mainDownloadTranslatedBtn.style.display = 'none';
+
+                // Actualizează UI lista (pentru clasa active)
+                refreshTranslationsList();
             } else {
                 try {
                     // Dacă nu avem segmentele în memorie (doar meta-datele de la refresh)
@@ -3462,24 +4164,19 @@
                 
                 const data = await response.json();
                 
-                addTranslationBtn.innerHTML = originalBtnText;
-                addTranslationBtn.disabled = false;
-                
                 if (data.success) {
-                    multipleTranslations[targetLang] = data.segments;
-                    translatedSrtFilename = data.srt_filename;
-                    loadTranslation(targetLang);
-                    showToast(`Traducere în ${targetLang} completă! ${data.segment_count} segmente traduse`, 'success');
-                    refreshTranslationsList();
+                    showToast('Traducerea a început în background...', 'info');
+                    progressContainer.style.display = 'block';
+                    loading.style.display = 'block';
+                    pollTaskStatus(data.process_id);
                     
-                    // Afișează butoanele de descărcare pentru traducere
-                    downloadTranslatedBtn.style.display = 'inline-flex';
-                    mainDownloadTranslatedBtn.style.display = 'inline-flex';
-
                     setTimeout(() => {
-                        showToast(`Fișierul ${data.srt_filename} a fost generat`, 'info');
-                    }, 500);
+                        addTranslationBtn.innerHTML = originalBtnText;
+                        addTranslationBtn.disabled = false;
+                    }, 1000);
                 } else {
+                    addTranslationBtn.innerHTML = originalBtnText;
+                    addTranslationBtn.disabled = false;
                     throw new Error(data.error || 'Eroare la traducere');
                 }
             } catch (error) {
@@ -3845,6 +4542,207 @@
                 toast.style.animation = 'slideOut 0.3s ease';
                 setTimeout(() => toast.remove(), 300);
             }, 3000);
+        }
+
+        // --- FUNCȚII PROIECTE (.STUM) ---
+
+        async function loadProjects() {
+            try {
+                const response = await fetch('/projects');
+                const projects = await response.json();
+                const projectGridList = document.getElementById('projectGridList');
+                const projectLibrary = document.getElementById('projectLibrary');
+
+                if (projects.length > 0) {
+                    projectLibrary.style.display = 'block';
+                    projectGridList.innerHTML = '';
+
+                    projects.forEach(p => {
+                        const card = document.createElement('div');
+                        card.className = `project-card ${processId === p.process_id ? 'active' : ''}`;
+                        card.onclick = (e) => {
+                            // Don't trigger if an action button was clicked
+                            if (e.target.closest('.project-btn')) return;
+                            loadProject(p.process_id);
+                        };
+
+                        const durationStr = p.duration ? formatDuration(p.duration) : 'N/A';
+
+                        card.innerHTML = `
+                            <h4 title="${p.project_name}">${p.project_name}</h4>
+                            <div class="meta">
+                                <span><i class="far fa-calendar-alt"></i> ${p.created_at}</span>
+                                <span><i class="far fa-clock"></i> ${durationStr} | <i class="fas fa-language"></i> ${p.language || 'auto'}</span>
+                                <span><i class="fas fa-microchip"></i> ${p.model_used || 'N/A'}</span>
+                            </div>
+                            <div class="project-actions">
+                                <button class="project-btn rename" onclick="renameProject('${p.process_id}', '${p.project_name}')">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button class="project-btn export" onclick="exportProject('${p.process_id}')">
+                                    <i class="fas fa-download"></i>
+                                </button>
+                                <button class="project-btn delete" onclick="deleteProject('${p.process_id}')">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        `;
+                        projectGridList.appendChild(card);
+                    });
+                } else {
+                    projectLibrary.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Eroare la încărcarea proiectelor:', error);
+            }
+        }
+
+        async function loadProject(pid) {
+            showToast('Se încarcă proiectul...', 'info');
+            try {
+                const response = await fetch(`/load_project/${pid}`);
+                const data = await response.json();
+
+                if (data.success) {
+                    processId = pid;
+
+                    // Resetăm UI-ul pentru rezultate
+                    resultContainer.style.display = 'block';
+                    document.getElementById('uploadArea').style.display = 'none';
+                    document.getElementById('resultTitle').innerHTML = `<i class="fas fa-folder-open"></i> Proiect: ${data.metadata.project_name}`;
+
+                    // Încărcăm segmentele
+                    const segResp = await fetch(`/segments_json/${pid}/original_segments.json?t=${Date.now()}`);
+                    if (segResp.ok) {
+                        const segData = await segResp.json();
+                        originalSegments = segData.segments;
+                        currentSegments = originalSegments;
+                        displaySegments(originalSegments);
+                    }
+
+                    // Verificăm video
+                    if (data.has_video) {
+                        videoPreviewUrl = `/video_file/video_playback_${pid}.mp4`;
+                        videoDuration = data.metadata.duration || 0;
+                        isVideoFile = true;
+                        isMp4File = true;
+
+                        document.getElementById('videoPreviewContainer').style.display = 'block';
+                        const videoSource = document.getElementById('videoSource');
+                        videoSource.src = videoPreviewUrl;
+                        document.getElementById('videoPreview').load();
+                        document.getElementById('totalTime').textContent = formatTime(videoDuration);
+                    }
+
+                    // Reîmprospătăm lista de traduceri
+                    refreshTranslationsList();
+                    document.getElementById('multipleTranslationsPanel').style.display = 'block';
+
+                    // Scroll la rezultate
+                    resultContainer.scrollIntoView({behavior: 'smooth'});
+
+                    // Update list selection
+                    loadProjects();
+                    showToast('Proiect încărcat cu succes', 'success');
+                } else {
+                    showError(`Eroare: ${data.error}`);
+                }
+            } catch (error) {
+                showError(`Eroare la încărcarea proiectului: ${error.message}`);
+            }
+        }
+
+        async function renameProject(pid, oldName) {
+            const newName = prompt('Introdu noul nume pentru proiect:', oldName);
+            if (!newName || newName === oldName) return;
+
+            try {
+                const response = await fetch(`/rename_project/${pid}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name: newName})
+                });
+                const data = await response.json();
+                if (data.success) {
+                    showToast('Proiect redenumit', 'success');
+                    if (processId === pid) {
+                        document.getElementById('resultTitle').innerHTML = `<i class="fas fa-folder-open"></i> Proiect: ${newName}`;
+                    }
+                    loadProjects();
+                }
+            } catch (error) {
+                showToast('Eroare la redenumire', 'error');
+            }
+        }
+
+        function renameCurrentProject() {
+            if (!processId) return;
+            const currentTitle = document.getElementById('resultTitle').textContent.replace(' Proiect: ', '').trim();
+            renameProject(processId, currentTitle);
+        }
+
+        function exportProject(pid) {
+            window.location.href = `/export_project/${pid}`;
+        }
+
+        function exportCurrentProject() {
+            if (processId) exportProject(processId);
+        }
+
+        async function deleteProject(pid) {
+            if (!confirm('Ești sigur că vrei să ștergi acest proiect? Această acțiune este ireversibilă.')) return;
+
+            try {
+                const response = await fetch(`/delete_project/${pid}`, { method: 'DELETE' });
+                const data = await response.json();
+                if (data.success) {
+                    showToast('Proiect șters', 'success');
+                    if (processId === pid) {
+                        location.reload(); // Refresh total dacă am șters proiectul curent
+                    } else {
+                        loadProjects();
+                    }
+                }
+            } catch (error) {
+                showToast('Eroare la ștergere', 'error');
+            }
+        }
+
+        async function importProject(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            showToast('Se importă proiectul...', 'info');
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/import_project', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (data.success) {
+                    showToast('Import finalizat', 'success');
+                    loadProject(data.process_id);
+                } else {
+                    showError(`Eroare import: ${data.error}`);
+                }
+            } catch (error) {
+                showError(`Eroare la import: ${error.message}`);
+            }
+            // Resetăm inputul
+            event.target.value = '';
+        }
+
+        function formatDuration(seconds) {
+            if (!seconds) return '0s';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            if (h > 0) return `${h}h ${m}m ${s}s`;
+            if (m > 0) return `${m}m ${s}s`;
+            return `${s}s`;
         }
     </script>
 </body>
