@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*$py.class
+data/
+venv/
+.env
+*.srt
+*.mp4
+*.jpg
+*.wav
+*.json
