@@ -1511,6 +1511,15 @@
                         <!-- Languages will be populated by JavaScript -->
                     </select>
                 </div>
+
+                <div class="translation-selector" style="margin-top: 10px;">
+                    <label for="translationEngineSelect"><i class="fas fa-microchip"></i> Engine:</label>
+                    <select id="translationEngineSelect">
+                        <option value="transformers">Transformers (Rapid)</option>
+                        <option value="qwen">LLM Qwen (Mai precis)</option>
+                        <option value="mistral">LLM Mistral</option>
+                    </select>
+                </div>
                 
                 <div class="translation-status" id="translationStatus">
                     <i class="fas fa-sync-alt fa-spin"></i>
@@ -1659,6 +1668,11 @@
                 <select id="newTranslationSelect">
                     <option value="">-- Alege o limbă nouă --</option>
                     <!-- Languages will be populated by JavaScript -->
+                </select>
+                <select id="newTranslationEngineSelect" style="max-width: 150px;">
+                    <option value="transformers">Transformers</option>
+                    <option value="qwen">Qwen LLM</option>
+                    <option value="mistral">Mistral LLM</option>
                 </select>
                 <button class="btn" onclick="addNewTranslation()" id="addTranslationBtn">
                     <i class="fas fa-plus"></i> Adaugă Traducere
@@ -2914,6 +2928,7 @@
                         model: currentModel,
                         language: currentLanguage,
                         translation_target: translationTarget || '',
+                        translation_engine: document.getElementById('translationEngineSelect').value,
                         adjust_segmentation: adjustSegmentationCheckbox.checked,
                         extract_audio_only: extractAudioOnlyCheckbox.checked
                     })
@@ -3456,7 +3471,8 @@
                     },
                     body: JSON.stringify({
                         target_lang: targetLang,
-                        source_lang: langCode
+                        source_lang: langCode,
+                        translation_engine: document.getElementById('newTranslationEngineSelect').value
                     })
                 });
                 
