@@ -12,12 +12,16 @@ import time
 import psutil
 import uuid
 import torch
+import torchaudio
+import numpy as np
+import re
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, MarianMTModel, MarianTokenizer
 import shutil
 from pathlib import Path
 import hashlib
 import math
 import traceback
+from silero_vad import get_speech_timestamps, load_silero_vad
 
 # Configurare director de date local
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
@@ -48,6 +52,10 @@ upload_lock = threading.Lock()
 # Managementul task-urilor în background
 processing_tasks = {}
 tasks_lock = threading.Lock()
+
+# Model VAD (Silero)
+vad_model = None
+vad_lock = threading.Lock()
 
 # Opțiuni modele disponibile
 AVAILABLE_MODELS = {
@@ -954,6 +962,107 @@ def write_srt(segments, output_path):
         print(f"Eroare la scrierea SRT: {str(e)}")
         return False
 
+def load_vad_model():
+    """Încarcă modelul Silero VAD"""
+    global vad_model
+    with vad_lock:
+        if vad_model is None:
+            print("Se încarcă modelul Silero VAD...")
+            vad_model = load_silero_vad()
+            print("✓ Model Silero VAD încărcat")
+    return vad_model
+
+def get_vad_segments(audio_path, min_speech_duration=0.5, min_silence_duration=0.5):
+    """
+    Segmentează audio-ul în fraze folosind Silero VAD.
+    Returnează o listă de dict-uri {start, end}
+    """
+    try:
+        model = load_vad_model()
+
+        # Load audio
+        wav, sr = torchaudio.load(audio_path)
+        if wav.shape[0] > 1:
+            wav = wav.mean(dim=0, keepdim=True)
+
+        if sr != 16000:
+            resampler = torchaudio.transforms.Resample(sr, 16000)
+            wav = resampler(wav)
+            sr = 16000
+
+        wav_np = wav.squeeze().numpy()
+
+        # Get speech timestamps
+        speech_timestamps = get_speech_timestamps(
+            wav_np,
+            model,
+            sampling_rate=sr,
+            min_speech_duration_ms=int(min_speech_duration*1000),
+            min_silence_duration_ms=int(min_silence_duration*1000),
+            speech_pad_ms=200
+        )
+
+        segments = []
+        for ts in speech_timestamps:
+            segments.append({
+                'start': ts['start'] / sr,
+                'end': ts['end'] / sr
+            })
+
+        return segments
+    except Exception as e:
+        print(f"Eroare la segmentare VAD: {str(e)}")
+        return None
+
+def filter_hallucinations(text):
+    """Elimină halucinațiile Whisper comune pentru limba română"""
+    if not text:
+        return ""
+
+    hallucinations = [
+        r"Vă mulțumim pentru vizionare!",
+        r"Subtitrare realizată de",
+        r"Vă mulțumesc pentru vizionare!",
+        r"Sper că v-a plăcut acest episod",
+        r"Nu uitați să vă abonați",
+        r"Dacă v-a plăcut, nu uitați să dați un like",
+        r"Urmăriți-ne pentru mai multe",
+        r"Vizionare plăcută!",
+        r"Toate drepturile rezervate",
+        r"Traducerea și adaptarea",
+        r"Sursă video",
+        r"Mulțumesc pentru vizionare!"
+    ]
+
+    filtered_text = text
+    for pattern in hallucinations:
+        filtered_text = re.sub(pattern, "", filtered_text, flags=re.IGNORECASE)
+
+    return filtered_text.strip()
+
+def deduplicate_segments(segments):
+    """Elimină segmentele care repetă același text consecutiv (stuttering)"""
+    if not segments:
+        return []
+
+    unique_segments = []
+    for i, seg in enumerate(segments):
+        if i == 0:
+            unique_segments.append(seg)
+            continue
+
+        current_text = seg['text'].strip().lower()
+        last_text = unique_segments[-1]['text'].strip().lower()
+
+        # Dacă textul este identic cu cel anterior, îl ignorăm pe cel curent
+        # dar extindem timpul celui anterior
+        if current_text == last_text and (seg['start'] - unique_segments[-1]['end']) < 2.0:
+            unique_segments[-1]['end'] = seg['end']
+        else:
+            unique_segments.append(seg)
+
+    return unique_segments
+
 def split_text_by_duration(text, duration, max_chars, min_segment_duration=1.0):
     """Împarte textul în bucăți pe baza duratei și numărului de caractere"""
     words = text.split()
@@ -1252,105 +1361,124 @@ def process_large_file(file_path, model_name, language, translation_target,
             result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
             duration = float(result.stdout.strip())
 
-            # Chunks de 10 minute
-            chunk_duration = 600
-            total_chunks = math.ceil(duration / chunk_duration)
+            # Sliding window approach for interleaved segments (30s window, 15s step)
+            window_duration = 30
+            step_duration = 15
+            num_steps = math.ceil(duration / step_duration)
 
-            print(f"Durata totală: {duration:.1f}s, Chunks: {total_chunks}")
+            print(f"Durata totală: {duration:.1f}s, Pași (interleaved): {num_steps}")
 
-            all_segments = []
+            all_raw_segments = []
             detected_language = language
 
-            # Procesează fiecare chunk din fișierul audio extras
-            for chunk_idx in range(total_chunks):
-                # Verifică dacă task-ul a fost anulat
+            # Obține segmentele VAD pentru a optimiza (opțional, dar recomandat)
+            vad_segments = get_vad_segments(full_audio_path)
+
+            # Procesează fiecare fereastră
+            for i in range(num_steps):
                 task = get_task_status(process_id)
                 if task and task.get('status') == 'cancelled':
-                    print(f"Task {process_id} anulat în timpul procesării chunks.")
                     return None
 
-                start_chunk = chunk_idx * chunk_duration
-                length_chunk = min(chunk_duration, duration - start_chunk)
+                start_window = i * step_duration
+                if start_window >= duration:
+                    break
 
-                # Evită chunk-uri insignifiante
-                if length_chunk < 0.1:
+                length_window = min(window_duration, duration - start_window)
+                if length_window < 0.5:
                     continue
 
-                progress_val = 15 + int((chunk_idx / total_chunks) * 60)
-                msg = f"Transcriere: chunk {chunk_idx + 1}/{total_chunks}"
+                # Verifică dacă există vorbire în această fereastră folosind VAD
+                if vad_segments:
+                    window_has_speech = False
+                    for vs in vad_segments:
+                        if (vs['start'] < start_window + length_window) and (vs['end'] > start_window):
+                            window_has_speech = True
+                            break
+                    if not window_has_speech:
+                        continue
+
+                progress_val = 15 + int((i / num_steps) * 60)
+                msg = f"Transcriere (interleaved): {i + 1}/{num_steps}"
                 update_task_status(process_id, 'processing', progress_val, msg)
 
-                print(f"Procesez chunk {chunk_idx + 1}/{total_chunks} ({start_chunk:.1f}s - {start_chunk + length_chunk:.1f}s)")
-
-                # Extrage audio chunk ca WAV
-                audio_chunk_path = os.path.join(audio_chunks_dir, f'chunk_{chunk_idx:03d}.wav')
-
+                # Extrage audio window
+                audio_chunk_path = os.path.join(audio_chunks_dir, f'chunk_{i:04d}.wav')
                 cmd = [
-                    'ffmpeg',
-                    '-i', full_audio_path,
-                    '-ss', str(start_chunk),
-                    '-t', str(length_chunk),
-                    '-acodec', 'pcm_s16le',
-                    '-y',
-                    audio_chunk_path
+                    'ffmpeg', '-ss', str(start_window), '-t', str(length_window),
+                    '-i', full_audio_path, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', '-y', audio_chunk_path
                 ]
-
                 subprocess.run(cmd, check=True, capture_output=True)
 
-                # Transcrie chunk-ul cu validare
-                chunk_result = None
                 if os.path.exists(audio_chunk_path) and os.path.getsize(audio_chunk_path) > 100:
                     try:
-                        # Verifică durata chunk-ului
-                        chunk_dur = get_video_duration(audio_chunk_path)
-                        if chunk_dur and chunk_dur > 0.1:
-                            transcribe_kwargs = {
-                                'task': 'transcribe',
-                                'fp16': (device == "cuda")
-                            }
-                            if language != 'auto':
-                                transcribe_kwargs['language'] = language
+                        transcribe_kwargs = {
+                            'task': 'transcribe',
+                            'fp16': (device == "cuda")
+                        }
+                        if language != 'auto':
+                            transcribe_kwargs['language'] = language
 
-                            chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
-                        else:
-                            print(f"Chunk {chunk_idx} prea scurt: {chunk_dur}s")
+                        chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
+
+                        if i == 0 and language == 'auto':
+                            detected_language = chunk_result.get('language', 'en')
+
+                        for seg in chunk_result.get('segments', []):
+                            seg['start'] += start_window
+                            seg['end'] += start_window
+                            seg['text'] = filter_hallucinations(seg['text'])
+                            if seg['text'].strip():
+                                all_raw_segments.append(seg)
                     except Exception as e:
-                        print(f"Eroare la verificarea/transcrierea chunk {chunk_idx}: {str(e)}")
+                        print(f"Eroare la procesarea ferestrei {i}: {str(e)}")
 
-                if not chunk_result:
-                    # Dacă chunk-ul e invalid sau Whisper a eșuat, trecem peste el
-                    if os.path.exists(audio_chunk_path):
-                        os.remove(audio_chunk_path)
-                    continue
+                if os.path.exists(audio_chunk_path):
+                    os.remove(audio_chunk_path)
 
-                # Capture detected language from the first chunk if in auto mode
-                if chunk_idx == 0 and language == 'auto':
-                    detected_language = chunk_result.get('language', 'en')
-                    print(f"Limbă detectată de Whisper: {detected_language}")
+            # Merging logic: "Best variant" based on logprob
+            final_segments = []
+            if all_raw_segments:
+                # Sortăm după timp
+                all_raw_segments.sort(key=lambda x: x['start'])
 
-                chunk_segments = chunk_result.get('segments', [])
+                for seg in all_raw_segments:
+                    is_duplicate = False
+                    for existing in final_segments:
+                        # Calculăm suprapunerea
+                        overlap_start = max(seg['start'], existing['start'])
+                        overlap_end = min(seg['end'], existing['end'])
+                        overlap_dur = max(0, overlap_end - overlap_start)
 
-                if not chunk_segments:
-                    continue
+                        seg_dur = seg['end'] - seg['start']
+                        existing_dur = existing['end'] - existing['start']
+                        min_dur = min(seg_dur, existing_dur)
 
-                # Ajustează timpii segmentelor
-                for seg in chunk_segments:
-                    seg['start'] += start_chunk
-                    seg['end'] += start_chunk
-                    all_segments.append(seg)
+                        # Dacă se suprapun semnificativ (>60%)
+                        if min_dur > 0 and (overlap_dur / min_dur) > 0.6:
+                            is_duplicate = True
+                            # Păstrăm varianta cu logprob mai mare (mai sigură)
+                            if seg.get('avg_logprob', -1e9) > existing.get('avg_logprob', -1e9):
+                                existing['text'] = seg['text']
+                                existing['avg_logprob'] = seg.get('avg_logprob')
+                            break
 
-                # Curăță chunk-ul audio
-                os.remove(audio_chunk_path)
+                    if not is_duplicate:
+                        final_segments.append(seg)
 
-            # Procesează segmentele combinate
-            segments = sorted(all_segments, key=lambda x: x['start'])
+            # Post-procesare: deduplicare și sortare
+            merged_segments = deduplicate_segments(final_segments)
+            merged_segments.sort(key=lambda x: x['start'])
 
             if should_adjust_segmentation:
-                segments = adjust_segmentation_algorithm(segments)
+                merged_segments = adjust_segmentation_algorithm(merged_segments)
 
             return {
-                'result': {'text': " ".join([s['text'] for s in segments]), 'language': detected_language},
-                'segments': segments,
+                'result': {
+                    'text': filter_hallucinations(" ".join([s['text'] for s in merged_segments])),
+                    'language': detected_language
+                },
+                'segments': merged_segments,
                 'transcribe_time': 0
             }
 
