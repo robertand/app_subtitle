@@ -402,10 +402,11 @@ def translate_with_llm(texts, source_lang, target_lang, engine='qwen'):
     translated_texts = []
 
     for text in texts:
-        prompt = f"Translate the following text from {source_name} to {target_name}. Output only the translation, no explanations.\n\nText: {text}\nTranslation:"
+        # Prompt multilingv mai strict
+        prompt = f"Translate only the text below from {source_name} to {target_name}. Output ONLY the translated text. Do not include any explanations, thinking process, or alternative versions.\n\nText to translate: {text}"
 
         messages = [
-            {"role": "system", "content": "You are a professional translator."},
+            {"role": "system", "content": "You are a subtitle translator. You provide only direct translations without any meta-talk or thinking process."},
             {"role": "user", "content": prompt}
         ]
 
@@ -413,10 +414,12 @@ def translate_with_llm(texts, source_lang, target_lang, engine='qwen'):
             text_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             model_inputs = tokenizer([text_prompt], return_tensors="pt").to(device)
 
+            # Parametri pentru a reduce verbozitatea
             generated_ids = model.generate(
                 **model_inputs,
                 max_new_tokens=256,
-                do_sample=False
+                do_sample=False,
+                temperature=0.0
             )
 
             generated_ids = [
@@ -424,7 +427,39 @@ def translate_with_llm(texts, source_lang, target_lang, engine='qwen'):
             ]
 
             response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
-            translated_texts.append(response)
+
+            # Curățare post-generare pentru halucinațiile de tip "Thinking Process"
+            # Eliminăm tag-urile <thought> și orice text care pare a fi proces de gândire
+            response = re.sub(r'<(thought|thinking)>.*?</\1>', '', response, flags=re.DOTALL | re.IGNORECASE)
+
+            # Căutăm textul după ultimele cuvinte cheie care indică începutul traducerii reale
+            markers = [
+                r"Translation:",
+                f"Translation to {target_name}:",
+                r"Traducere:",
+                r"Rezultat:",
+                r"Final Translation:"
+            ]
+
+            found_marker = False
+            for marker in markers:
+                pattern = re.compile(marker, re.IGNORECASE)
+                parts = pattern.split(response)
+                if len(parts) > 1:
+                    response = parts[-1].strip()
+                    found_marker = True
+                    break
+
+            if not found_marker:
+                # Dacă nu am găsit un marker explicit, dar există meta-talk la început
+                # eliminăm bucățile care încep cu cuvinte cheie de analiză
+                response = re.sub(r'^(Thinking Process|Proces de gândire|Analiza cererii|Drafting the Translation|Analysis).*?(\n\n|\n)', '', response, flags=re.DOTALL | re.IGNORECASE | re.MULTILINE)
+
+            # Eliminăm ghilimelele reziduale de la început și sfârșit
+            response = response.strip().strip('"').strip("'").strip()
+
+            # Dacă răspunsul e gol după curățare, folosim textul original ca fallback
+            translated_texts.append(response if response else text)
         except Exception as e:
             print(f"LLM translation error: {e}")
             translated_texts.append(text)
