@@ -362,11 +362,34 @@ def load_llm_model(engine='qwen'):
 
             from transformers import AutoModelForCausalLM
             tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+            # Încercăm încărcare optimizată (4bit) dacă suntem pe CUDA
+            model_kwargs = {
+                "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
+                "device_map": "auto" if device == "cuda" else None,
+            }
+
+            if device == "cuda":
+                try:
+                    import bitsandbytes
+                    from transformers import BitsAndBytesConfig
+                    model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_use_double_quant=True
+                    )
+                    print(f"✨ Folosesc cuantizare 4bit pentru {engine}")
+                except ImportError:
+                    print(f"ℹ️ bitsandbytes nu este instalat, folosesc FP16 standard")
+
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
-                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-                device_map="auto" if device == "cuda" else None
-            ).to(device)
+                **model_kwargs
+            )
+
+            if device != "cuda":
+                model = model.to(device)
 
             load_time = time.time() - start_time
 
