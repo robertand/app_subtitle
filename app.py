@@ -402,12 +402,12 @@ def translate_with_llm(texts, source_lang, target_lang, engine='qwen'):
     translated_texts = []
 
     for text in texts:
-        # Prompt multilingv mai strict
-        prompt = f"Translate only the text below from {source_name} to {target_name}. Output ONLY the translated text. Do not include any explanations, thinking process, or alternative versions.\n\nText to translate: {text}"
-
+        # Few-shot prompting for better compliance
         messages = [
-            {"role": "system", "content": "You are a subtitle translator. You provide only direct translations without any meta-talk or thinking process."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": "You are a professional subtitle translator. You MUST output ONLY the translated text. NO meta-talk, NO analysis, NO numbered lists, NO 'Thinking Process'. Just the translation."},
+            {"role": "user", "content": "Translate to Romanian: Hello, how are you?"},
+            {"role": "assistant", "content": "Salut, ce mai faci?"},
+            {"role": "user", "content": f"Translate from {source_name} to {target_name}: {text}"}
         ]
 
         try:
@@ -428,34 +428,67 @@ def translate_with_llm(texts, source_lang, target_lang, engine='qwen'):
 
             response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
 
-            # Curățare post-generare pentru halucinațiile de tip "Thinking Process"
-            # Eliminăm tag-urile <thought> și orice text care pare a fi proces de gândire
+            # Curățare post-generare pentru halucinațiile persistente
             response = re.sub(r'<(thought|thinking)>.*?</\1>', '', response, flags=re.DOTALL | re.IGNORECASE)
 
-            # Căutăm textul după ultimele cuvinte cheie care indică începutul traducerii reale
-            markers = [
-                r"Translation:",
-                f"Translation to {target_name}:",
-                r"Traducere:",
-                r"Rezultat:",
-                r"Final Translation:"
+            # Dacă LLM-ul listează drafturi sau variante, încercăm să extragem ultima variantă (de obicei cea mai rafinată)
+            # sau varianta marcată ca fiind pentru subtitrări
+            draft_patterns = [
+                r"(?:Draft|Varianta|Version)\s*(?:\d+|subtitle|concise)[\s:-]+(.+?)(?=\n|$)",
+                r"(?:^|\n)\s*\*\s*(?:Draft|Varianta|Version).*?:\s*(.+?)(?=\n|$)"
             ]
 
-            found_marker = False
-            for marker in markers:
-                pattern = re.compile(marker, re.IGNORECASE)
-                parts = pattern.split(response)
-                if len(parts) > 1:
-                    response = parts[-1].strip()
-                    found_marker = True
+            draft_found = False
+            for pattern in draft_patterns:
+                matches = re.findall(pattern, response, flags=re.IGNORECASE | re.MULTILINE)
+                if matches:
+                    # Alegem ultima variantă care pare a fi traducerea propriu-zisă
+                    last_match = matches[-1].strip()
+                    # Dacă match-ul conține alte drafturi (regex greediness issue), îl curățăm
+                    if "*" in last_match or "Draft" in last_match:
+                        sub_matches = re.split(r'\s*\*\s*', last_match)
+                        response = sub_matches[-1].split(':')[-1].strip()
+                    else:
+                        response = last_match
+                    draft_found = True
                     break
 
-            if not found_marker:
-                # Dacă nu am găsit un marker explicit, dar există meta-talk la început
-                # eliminăm bucățile care încep cu cuvinte cheie de analiză
-                response = re.sub(r'^(Thinking Process|Proces de gândire|Analiza cererii|Drafting the Translation|Analysis).*?(\n\n|\n)', '', response, flags=re.DOTALL | re.IGNORECASE | re.MULTILINE)
+            if not draft_found:
+                # Căutăm textul după ultimele cuvinte cheie care indică începutul traducerii reale
+                markers = [
+                    r"Final Translation:",
+                    r"Translation to " + re.escape(target_name) + r":",
+                    r"Translation:",
+                    r"Traducere Finală:",
+                    r"Traducere:",
+                    r"Rezultat:"
+                ]
 
-            # Eliminăm ghilimelele reziduale de la început și sfârșit
+                for marker in markers:
+                    pattern = re.compile(marker, re.IGNORECASE)
+                    parts = pattern.split(response)
+                    if len(parts) > 1:
+                        response = parts[-1].strip()
+                        break
+
+            # Eliminăm blocurile de analiză numerotate (1. Analyze..., 2. Translate...)
+            if re.search(r'^\d+\.\s+\*\*', response, re.MULTILINE):
+                # Dacă încă avem text numerotat, încercăm să găsim ultima secțiune de traducere
+                sections = re.split(r'\n\d+\.\s+', response)
+                for section in reversed(sections):
+                    if "traduc" in section.lower() or "translat" in section.lower():
+                        # Extragem doar textul, eliminând titlul secțiunii
+                        response = re.sub(r'^.*?\*\*.*?\n', '', section, flags=re.IGNORECASE).strip()
+                        break
+
+            # Eliminăm markdown-ul rezidual (bold, liste)
+            # Eliminăm markdown bolding care ar putea înconjura textul întreg
+            response = re.sub(r'^\*\*(.*?)\*\*$', r'\1', response)
+            # Eliminăm etichete bold gen **Literal:** în interior
+            response = re.sub(r'\*\*.*?\*\*', '', response)
+            response = response.strip().strip('*').strip('-').strip()
+
+            # Eliminăm ghilimelele reziduale
             response = response.strip().strip('"').strip("'").strip()
 
             # Dacă răspunsul e gol după curățare, folosim textul original ca fallback
