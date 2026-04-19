@@ -371,6 +371,7 @@ def load_llm_model(engine='gemma'):
 
             if device == "cuda":
                 try:
+                    # Check bitsandbytes version
                     import bitsandbytes
                     from transformers import BitsAndBytesConfig
                     model_kwargs["quantization_config"] = BitsAndBytesConfig(
@@ -380,13 +381,26 @@ def load_llm_model(engine='gemma'):
                         bnb_4bit_use_double_quant=True
                     )
                     print(f"✨ Folosesc cuantizare 4bit pentru {engine}")
-                except ImportError:
-                    print(f"ℹ️ bitsandbytes nu este instalat, folosesc FP16 standard")
+                except Exception as bnb_err:
+                    print(f"ℹ️ bitsandbytes nu poate fi folosit: {bnb_err}. Folosesc FP16 standard.")
+                    if "quantization_config" in model_kwargs:
+                        del model_kwargs["quantization_config"]
 
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                **model_kwargs
-            )
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    **model_kwargs
+                )
+            except Exception as load_err:
+                if "quantization_config" in model_kwargs:
+                    print(f"⚠️ Încărcarea 4bit a eșuat ({load_err}). Reîncerc FP16 standard...")
+                    del model_kwargs["quantization_config"]
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_name,
+                        **model_kwargs
+                    )
+                else:
+                    raise load_err
 
             if device != "cuda":
                 model = model.to(device)
@@ -427,8 +441,8 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
     for text in texts:
         # Prompt specific pentru TranslateGemma sau general LLM
         if engine == 'gemma':
-            # TranslateGemma are un format specific uneori, dar aici folosim instruct format-ul lor
-            prompt = f"Translate the following subtitle from {source_name} to {target_name}.\n\nSource: {text}\nTarget:"
+            # TranslateGemma are un format specific foarte strict
+            prompt = f"Translate the following text from {source_name} to {target_name}. Output ONLY the translated text.\n\n{source_name}: {text}\n{target_name}:"
             messages = [
                 {"role": "user", "content": prompt}
             ]
@@ -493,7 +507,8 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
                     r"Traducere Finală:",
                     r"Traducere:",
                     r"Rezultat:",
-                    r"Target:"
+                    r"Target:",
+                    re.escape(target_name) + r":"
                 ]
 
                 for marker in markers:

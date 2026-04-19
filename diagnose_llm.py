@@ -60,7 +60,16 @@ def diagnose(engine='gemma'):
                 pass
 
         print(f"Se descarcă/încarcă {model_name}...")
-        model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+        try:
+            model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+        except Exception as e:
+            if "quantization_config" in model_kwargs:
+                print(f"⚠️ Încărcarea 4bit a eșuat ({e}). Reîncerc FP16...")
+                del model_kwargs["quantization_config"]
+                model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+            else:
+                raise e
+
         if not cuda_available:
             model = model.to(device)
 
