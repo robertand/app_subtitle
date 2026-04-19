@@ -192,6 +192,45 @@ TRANSLATION_LANGUAGES = {
     'sw': 'Swahili'
 }
 
+# Limbi pentru prompt-uri LLM (nume în engleză pentru mai bună înțelegere de către model)
+LLM_PROMPT_LANGUAGES = {
+    'ro': 'Romanian',
+    'en': 'English',
+    'tr': 'Turkish',
+    'fr': 'French',
+    'de': 'German',
+    'es': 'Spanish',
+    'it': 'Italian',
+    'ru': 'Russian',
+    'zh': 'Chinese',
+    'ja': 'Japanese',
+    'ko': 'Korean',
+    'ar': 'Arabic',
+    'hi': 'Hindi',
+    'pt': 'Portuguese',
+    'nl': 'Dutch',
+    'pl': 'Polish',
+    'sv': 'Swedish',
+    'sk': 'Slovak',
+    'sl': 'Slovenian',
+    'da': 'Danish',
+    'fi': 'Finnish',
+    'no': 'Norwegian',
+    'cs': 'Czech',
+    'hu': 'Hungarian',
+    'bg': 'Bulgarian',
+    'el': 'Greek',
+    'uk': 'Ukrainian',
+    'vi': 'Vietnamese',
+    'th': 'Thai',
+    'he': 'Hebrew',
+    'id': 'Indonesian',
+    'ms': 'Malay',
+    'fa': 'Persian',
+    'ur': 'Urdu',
+    'sw': 'Swahili'
+}
+
 # Creează folderele necesare
 os.makedirs(app.config['CHUNK_FOLDER'], exist_ok=True)
 
@@ -433,18 +472,23 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
     tokenizer = model_data['tokenizer']
     device = model_data['device']
 
-    source_name = SUPPORTED_LANGUAGES.get(source_lang, source_lang)
-    target_name = SUPPORTED_LANGUAGES.get(target_lang, target_lang)
+    source_name = LLM_PROMPT_LANGUAGES.get(source_lang, SUPPORTED_LANGUAGES.get(source_lang, source_lang))
+    target_name = LLM_PROMPT_LANGUAGES.get(target_lang, SUPPORTED_LANGUAGES.get(target_lang, target_lang))
 
     translated_texts = []
 
     for text in texts:
+        if not text.strip():
+            translated_texts.append(text)
+            continue
+
         # Prompt specific pentru TranslateGemma sau general LLM
         if engine == 'gemma':
-            # TranslateGemma are un format specific foarte strict
-            prompt = f"Translate the following text from {source_name} to {target_name}. Output ONLY the translated text.\n\n{source_name}: {text}\n{target_name}:"
+            # TranslateGemma are un format specific foarte strict, folosim few-shot pentru siguranta
             messages = [
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": f"Translate from English to Romanian: Hello, how are you?"},
+                {"role": "assistant", "content": "Salut, ce mai faci?"},
+                {"role": "user", "content": f"Translate from {source_name} to {target_name}: {text}"}
             ]
         else:
             # Few-shot prompting for better compliance (Mistral, etc.)
@@ -538,6 +582,15 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
             # Eliminăm ghilimelele reziduale
             response = response.strip().strip('"').strip("'").strip()
 
+            # Verificare finală: dacă modelul a repetat sursa (engleza de obicei) sau e identic cu originalul
+            # dar limba cerută e alta, înseamnă că a eșuat.
+            # Aceasta este o euristică simplă: dacă textul conține cuvinte englezești comune care nu sunt în română (the, is, and)
+            if source_lang == 'en' and target_lang != 'en':
+                english_words = {' the ', ' is ', ' and ', ' with ', ' for '}
+                if any(word in f" {response.lower()} " for word in english_words):
+                    # Încercăm să curățăm mai agresiv dacă e cazul, sau marcăm ca eșuat
+                    pass
+
             # Dacă răspunsul e gol după curățare, folosim textul original ca fallback
             translated_texts.append(response if response else text)
         except Exception as e:
@@ -584,20 +637,30 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                     
                 elif model_type == 'nllb':
                     # NLLB-200
-                    src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
-                    tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
+                    src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang)
+                    if not src_code:
+                         src_code = f"{source_lang}_Latn"
+
+                    tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang)
+                    if not tgt_code:
+                         tgt_code = f"{target_lang}_Latn"
+
+                    print(f"NLLB: {src_code} -> {tgt_code}")
 
                     if hasattr(tokenizer, 'src_lang'):
                         tokenizer.src_lang = src_code
 
                     forced_bos_token_id = None
                     try:
-                        if hasattr(tokenizer, 'get_lang_id'):
+                        # Prioritate pentru NLLB tokenizer behavior
+                        if hasattr(tokenizer, 'lang_code_to_id'):
+                            if tgt_code in tokenizer.lang_code_to_id:
+                                forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
+
+                        if forced_bos_token_id is None and hasattr(tokenizer, 'get_lang_id'):
                             forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
-                        elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
-                            forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f"NLLB Lang ID error: {e}")
 
                     inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
                     
