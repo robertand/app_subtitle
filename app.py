@@ -484,11 +484,11 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
 
         # Prompt specific pentru TranslateGemma sau general LLM
         if engine == 'gemma':
-            # TranslateGemma are un format specific foarte strict, folosim few-shot pentru siguranta
+            # TranslateGemma are un format specific foarte strict, folosim un format simplu fără 'role' dacă e posibil
+            # sau un format compatibil cu instrucțiunile lor oficiale
+            prompt = f"Translate from {source_name} to {target_name}.\n\nSource: {text}\nTranslation:"
             messages = [
-                {"role": "user", "content": f"Translate from English to Romanian: Hello, how are you?"},
-                {"role": "assistant", "content": "Salut, ce mai faci?"},
-                {"role": "user", "content": f"Translate from {source_name} to {target_name}: {text}"}
+                {"role": "user", "content": prompt}
             ]
         else:
             # Few-shot prompting for better compliance (Mistral, etc.)
@@ -544,6 +544,7 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
 
             if not draft_found:
                 # Căutăm textul după ultimele cuvinte cheie care indică începutul traducerii reale
+                # Adăugăm și cuvinte cheie în turcă
                 markers = [
                     r"Final Translation:",
                     r"Translation to " + re.escape(target_name) + r":",
@@ -551,6 +552,8 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
                     r"Traducere Finală:",
                     r"Traducere:",
                     r"Rezultat:",
+                    r"Son Çeviri:",
+                    r"Çeviri:",
                     r"Target:",
                     re.escape(target_name) + r":"
                 ]
@@ -582,17 +585,32 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
             # Eliminăm ghilimelele reziduale
             response = response.strip().strip('"').strip("'").strip()
 
-            # Verificare finală: dacă modelul a repetat sursa (engleza de obicei) sau e identic cu originalul
-            # dar limba cerută e alta, înseamnă că a eșuat.
-            # Aceasta este o euristică simplă: dacă textul conține cuvinte englezești comune care nu sunt în română (the, is, and)
-            if source_lang == 'en' and target_lang != 'en':
+            # Verificare finală: dacă modelul a repetat sursa sau e prea similar cu originalul
+            # dar limba cerută e alta, încercăm o a doua variantă mai agresivă
+            is_repetition = (response.strip().lower() == text.strip().lower())
+
+            # Euristică: dacă textul conține cuvinte englezești comune în output care ar trebui să fie altă limbă
+            if not is_repetition and source_lang == 'en' and target_lang != 'en':
                 english_words = {' the ', ' is ', ' and ', ' with ', ' for '}
                 if any(word in f" {response.lower()} " for word in english_words):
-                    # Încercăm să curățăm mai agresiv dacă e cazul, sau marcăm ca eșuat
+                    is_repetition = True
+
+            if is_repetition and engine == 'gemma':
+                print(f"Gemma repetition detected for: '{text}'. Retrying with strict prompt...")
+                # Re-încercare cu prompt de urgență
+                strict_prompt = f"TRANSLATE THIS TO {target_name.upper()} NOW: {text}\nONLY THE TRANSLATION:"
+                try:
+                    retry_inputs = tokenizer([strict_prompt], return_tensors="pt").to(device)
+                    retry_ids = model.generate(**retry_inputs, max_new_tokens=100, do_sample=False)
+                    retry_ids = [ids[len(retry_inputs.input_ids[0]):] for ids in retry_ids]
+                    response = tokenizer.batch_decode(retry_ids, skip_special_tokens=True)[0].strip()
+                    # Curățăm și rezultatul re-încercării
+                    response = response.split('\n')[0].split(':')[-1].strip()
+                except:
                     pass
 
             # Dacă răspunsul e gol după curățare, folosim textul original ca fallback
-            translated_texts.append(response if response else text)
+            translated_texts.append(response if response and response.strip() else text)
         except Exception as e:
             print(f"LLM translation error: {e}")
             translated_texts.append(text)
@@ -638,35 +656,41 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                 elif model_type == 'nllb':
                     # NLLB-200
                     src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang)
-                    if not src_code:
-                         src_code = f"{source_lang}_Latn"
+                    if not src_code: src_code = f"{source_lang}_Latn"
 
                     tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang)
-                    if not tgt_code:
-                         tgt_code = f"{target_lang}_Latn"
+                    if not tgt_code: tgt_code = f"{target_lang}_Latn"
 
                     print(f"NLLB: {src_code} -> {tgt_code}")
 
-                    if hasattr(tokenizer, 'src_lang'):
-                        tokenizer.src_lang = src_code
+                    # Setează explicit limbile în tokenizer
+                    tokenizer.src_lang = src_code
+                    tokenizer.tgt_lang = tgt_code
 
                     forced_bos_token_id = None
                     try:
-                        # Prioritate pentru NLLB tokenizer behavior
-                        if hasattr(tokenizer, 'lang_code_to_id'):
-                            if tgt_code in tokenizer.lang_code_to_id:
-                                forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
-
-                        if forced_bos_token_id is None and hasattr(tokenizer, 'get_lang_id'):
+                        if hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
+                            forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
+                        elif hasattr(tokenizer, 'get_lang_id'):
                             forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
                     except Exception as e:
                         print(f"NLLB Lang ID error: {e}")
 
-                    inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+                    # Encodează cu specificarea limbilor
+                    inputs = tokenizer(
+                        batch_texts,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                        max_length=512
+                    ).to(device)
                     
-                    gen_kwargs = {"max_length": 512, "num_beams": 4, "early_stopping": True}
-                    if forced_bos_token_id is not None:
-                        gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
+                    gen_kwargs = {
+                        "max_length": 512,
+                        "num_beams": 4,
+                        "early_stopping": True,
+                        "forced_bos_token_id": forced_bos_token_id
+                    }
 
                     translated = model.generate(**inputs, **gen_kwargs)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
