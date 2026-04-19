@@ -5,11 +5,11 @@ import os
 
 # Simulăm structura din app.py pentru a găsi modelul
 TRANSLATION_MODELS_CONFIG = {
-    'qwen': {'name': 'Qwen/Qwen3.5-9B'},
+    'gemma': {'name': 'google/translategemma-12b-it'},
     'mistral': {'name': 'mistralai/Mistral-7B-Instruct-v0.3'}
 }
 
-def diagnose(engine='qwen'):
+def diagnose(engine='gemma'):
     print(f"\n=== Diagnostic Accelerare LLM ({engine}) ===")
 
     # 1. Verificare CUDA
@@ -94,5 +94,5 @@ def diagnose(engine='qwen'):
         print(f"\n❌ Eroare în timpul diagnosticului: {str(e)}")
 
 if __name__ == "__main__":
-    eng = sys.argv[1] if len(sys.argv) > 1 else 'qwen'
+    eng = sys.argv[1] if len(sys.argv) > 1 else 'gemma'
     diagnose(eng)

@@ -143,9 +143,9 @@ TRANSLATION_MODELS_CONFIG = {
             'sl-en': 'Helsinki-NLP/opus-mt-sl-en',
         }
     },
-    'qwen': {
-        'name': 'Qwen/Qwen3.5-9B',
-        'display_name': 'Qwen 3.5 (LLM, 9B)'
+    'gemma': {
+        'name': 'google/translategemma-12b-it',
+        'display_name': 'Gemma 12B (Best)'
     },
     'mistral': {
         'name': 'mistralai/Mistral-7B-Instruct-v0.3', # This might be too large for typical environment, but added as option
@@ -339,7 +339,7 @@ def load_translation_model(source_lang, target_lang):
                 print(f"✗ Eroare critică la încărcarea modelului: {str(e2)}")
                 return None
 
-def load_llm_model(engine='qwen'):
+def load_llm_model(engine='gemma'):
     """Încarcă un model LLM pentru traducere"""
     global translation_models
 
@@ -409,7 +409,7 @@ def load_llm_model(engine='qwen'):
             print(f"✗ Eroare la încărcarea LLM {engine}: {str(e)}")
             return None
 
-def translate_with_llm(texts, source_lang, target_lang, engine='qwen'):
+def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
     """Traduce texte folosind un model LLM (Qwen/Mistral)"""
     model_data = load_llm_model(engine)
     if not model_data:
@@ -425,13 +425,21 @@ def translate_with_llm(texts, source_lang, target_lang, engine='qwen'):
     translated_texts = []
 
     for text in texts:
-        # Few-shot prompting for better compliance
-        messages = [
-            {"role": "system", "content": "You are a professional subtitle translator. You MUST output ONLY the translated text. NO meta-talk, NO analysis, NO numbered lists, NO 'Thinking Process'. Just the translation."},
-            {"role": "user", "content": "Translate to Romanian: Hello, how are you?"},
-            {"role": "assistant", "content": "Salut, ce mai faci?"},
-            {"role": "user", "content": f"Translate from {source_name} to {target_name}: {text}"}
-        ]
+        # Prompt specific pentru TranslateGemma sau general LLM
+        if engine == 'gemma':
+            # TranslateGemma are un format specific uneori, dar aici folosim instruct format-ul lor
+            prompt = f"Translate the following subtitle from {source_name} to {target_name}.\n\nSource: {text}\nTarget:"
+            messages = [
+                {"role": "user", "content": prompt}
+            ]
+        else:
+            # Few-shot prompting for better compliance (Mistral, etc.)
+            messages = [
+                {"role": "system", "content": "You are a professional subtitle translator. You MUST output ONLY the translated text. NO meta-talk, NO analysis, NO numbered lists, NO 'Thinking Process'. Just the translation."},
+                {"role": "user", "content": "Translate to Romanian: Hello, how are you?"},
+                {"role": "assistant", "content": "Salut, ce mai faci?"},
+                {"role": "user", "content": f"Translate from {source_name} to {target_name}: {text}"}
+            ]
 
         try:
             text_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -484,7 +492,8 @@ def translate_with_llm(texts, source_lang, target_lang, engine='qwen'):
                     r"Translation:",
                     r"Traducere Finală:",
                     r"Traducere:",
-                    r"Rezultat:"
+                    r"Rezultat:",
+                    r"Target:"
                 ]
 
                 for marker in markers:
@@ -528,7 +537,7 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
         return segments
     
     try:
-        if engine in ['qwen', 'mistral']:
+        if engine in ['gemma', 'mistral']:
             model_data = load_llm_model(engine)
         else:
             # Încarcă modelul de traducere standard
