@@ -144,8 +144,8 @@ TRANSLATION_MODELS_CONFIG = {
         }
     },
     'qwen': {
-        'name': 'Qwen/Qwen2.5-1.5B-Instruct',
-        'display_name': 'Qwen 2.5 (LLM, 1.5B)'
+        'name': 'Qwen/Qwen3.5-9B',
+        'display_name': 'Qwen 3.5 (LLM, 9B)'
     },
     'mistral': {
         'name': 'mistralai/Mistral-7B-Instruct-v0.3', # This might be too large for typical environment, but added as option
@@ -438,19 +438,15 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
     
     try:
         if engine in ['qwen', 'mistral']:
-            model_type = 'llm'
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model_data = load_llm_model(engine)
         else:
             # Încarcă modelul de traducere standard
             model_data = load_translation_model(source_lang, target_lang)
-            if not model_data:
-                print(f"✗ Nu există model de traducere pentru {source_lang}->{target_lang}")
-                return segments
-            model = model_data['model']
-            tokenizer = model_data['tokenizer']
-            device = model_data['device']
-            model_type = model_data['model_type']
-        
+
+        if not model_data:
+            print(f"✗ Nu există model de traducere ({engine}) pentru {source_lang}->{target_lang}")
+            return segments
+
         model = model_data['model']
         tokenizer = model_data['tokenizer']
         device = model_data['device']
