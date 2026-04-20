@@ -311,14 +311,7 @@ def load_translation_model(source_lang, target_lang):
             if 'ro-en' not in model_map:
                 model_map['ro-en'] = 'Helsinki-NLP/opus-mt-ROMANCE-en'
             
-            # Prioritizăm NLLB pentru Turcă pentru a evita problemele de routing din MarianMT
-            if source_lang == 'tr' and model_key in model_map:
-                print(f"Bypassing MarianMT for Turkish ({source_lang}) to use NLLB...")
-                use_model_map = False
-            else:
-                use_model_map = model_key in model_map
-
-            if use_model_map:
+            if model_key in model_map:
                 model_name = model_map[model_key]
                 print(f"Încarc modelul Opus-MT: {model_name}")
                 
@@ -494,8 +487,9 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
         # Prompt specific pentru TranslateGemma sau general LLM
         try:
             if engine == 'gemma':
-                # TranslateGemma adesea preferă un format simplu fără chat template complex
-                text_prompt = f"TASK: Translate following text from {source_name} to {target_name}.\nSOURCE: {text}\nTARGET:"
+                # Format oficial TranslateGemma:
+                # Translate the following text from {src_lang} to {tgt_lang}.\n{src_lang}: {text}\n{tgt_lang}:
+                text_prompt = f"Translate the following text from {source_name} to {target_name}.\n{source_name}: {text}\n{target_name}:"
             else:
                 # Few-shot prompting for better compliance (Mistral, etc.)
                 messages = [
@@ -510,31 +504,28 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
                     print(f"Chat template error ({engine}): {template_err}. Falling back to simple prompt.")
                     text_prompt = f"Translate from {source_name} to {target_name}: {text}\nTranslation:"
 
-            model_inputs = tokenizer([text_prompt], return_tensors="pt").to(device)
-
+            # Asigurăm că input-ul este corect formatat pentru model.generate
+            inputs = tokenizer(text_prompt, return_tensors="pt").to(device)
             # Parametri pentru a reduce verbozitatea și repetiția
             gen_kwargs = {
                 "max_new_tokens": 256,
-                "do_sample": False
+                "do_sample": False,
+                "temperature": 0.0
             }
 
             if engine == 'gemma':
-                # Adăugăm penalizare pentru repetiție special pentru Gemma
                 gen_kwargs["repetition_penalty"] = 1.2
-                gen_kwargs["temperature"] = 0.0 # Maintain deterministic for translation
-            else:
-                gen_kwargs["temperature"] = 0.0
 
             generated_ids = model.generate(
-                **model_inputs,
+                inputs.input_ids,
+                attention_mask=inputs.attention_mask,
                 **gen_kwargs
             )
 
-            generated_ids = [
-                output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-            ]
+            # Decodăm doar partea generată
+            generated_ids = generated_ids[0][inputs.input_ids.shape[-1]:]
 
-            response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+            response = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
             # Curățare post-generare pentru halucinațiile persistente
             response = re.sub(r'<(thought|thinking)>.*?</\1>', '', response, flags=re.DOTALL | re.IGNORECASE)
@@ -648,6 +639,14 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
     """Traduce un batch de segmente păstrând timecode-ul"""
     if not segments or source_lang == target_lang:
         return segments
+
+    # Bridge special pentru Turcă -> Română în mod Batch (Transformers)
+    if source_lang == 'tr' and target_lang == 'ro' and engine == 'transformers':
+        print("Turkish -> Romanian Batch via bridge...")
+        # Traducem în engleză batch-ul (folosind MarianMT dacă e disponibil)
+        segments_en = translate_segment_batch(segments, 'tr', 'en', batch_size=batch_size, engine=engine)
+        # Apoi traducem din engleză în română (folosind MarianMT)
+        return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine)
     
     try:
         if engine in ['gemma', 'mistral']:
@@ -690,18 +689,16 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
                     
                 elif model_type == 'nllb':
-                    # NLLB-200
+                    # NLLB-200 logic robustificat
                     src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang)
                     if not src_code: src_code = f"{source_lang}_Latn"
 
                     tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang)
                     if not tgt_code: tgt_code = f"{target_lang}_Latn"
 
-                    print(f"NLLB Batch: {src_code} -> {tgt_code}")
-
-                    # Setează explicit limbile în tokenizer
-                    tokenizer.src_lang = src_code
-                    # Important pentru NLLB: setăm limbile înainte de tokenizare
+                    # Setează explicit limbile în tokenizer (dacă suportă)
+                    if hasattr(tokenizer, 'src_lang'): tokenizer.src_lang = src_code
+                    if hasattr(tokenizer, 'tgt_lang'): tokenizer.tgt_lang = tgt_code
 
                     forced_bos_token_id = None
                     try:
@@ -712,8 +709,8 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                     except Exception as e:
                         print(f"NLLB Lang ID error: {e}")
 
-                    # Encodează cu specificarea limbilor
-                    # Pentru NLLB, uneori e mai bine să punem prefixul în text dacă forced_bos_token_id dă greș
+                    print(f"NLLB Batch: {src_code} -> {tgt_code} (BOS: {forced_bos_token_id})")
+
                     inputs = tokenizer(
                         batch_texts,
                         return_tensors="pt",
@@ -725,22 +722,20 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                     gen_kwargs = {
                         "max_length": 512,
                         "num_beams": 4,
-                        "early_stopping": True
+                        "early_stopping": True,
+                        "forced_bos_token_id": forced_bos_token_id
                     }
-                    if forced_bos_token_id is not None:
-                        gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
 
                     translated = model.generate(**inputs, **gen_kwargs)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
 
-                    # Verificare post-procesare: Dacă e NLLB și a scos franceză (le, la, et) în loc de română
+                    # Detecție viciu NLLB (ieșire în franceză)
                     if target_lang == 'ro' and source_lang != 'fr':
                         french_indicators = {' le ', ' la ', ' et ', ' est ', ' dans '}
                         for idx, t_text in enumerate(translated_texts):
                             if any(ind in f" {t_text.lower()} " for ind in french_indicators):
-                                print(f"NLLB batch detection: French artifacts in Romanian output for segment {i+idx}. Retrying with prefix...")
-                                # Încercăm să forțăm româna re-traducând acel segment cu un prompt mai clar
-                                # sau acceptăm că NLLB are limite și mergem mai departe (sau fallback Gemma dacă e disponibil)
+                                print(f"NLLB artifacts detected in segment {i+idx}. Retrying via bridge...")
+                                translated_texts[idx] = translate_text(batch_texts[idx], source_lang, target_lang)
                 
                 else:
                     # Fallback pentru alte modele
@@ -2594,11 +2589,12 @@ def model_status():
         
         translation_status = {}
         for model_key in translation_models.keys():
+            m = translation_models[model_key]
             translation_status[model_key] = {
                 'loaded': True,
-                'device': translation_models[model_key]['device'],
-                'source': translation_models[model_key]['source'],
-                'target': translation_models[model_key]['target']
+                'device': m.get('device', 'cpu'),
+                'source': m.get('source', m.get('engine', 'unknown')),
+                'target': m.get('target', 'unknown')
             }
         
         system_info = {
