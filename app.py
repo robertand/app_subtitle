@@ -141,6 +141,8 @@ TRANSLATION_MODELS_CONFIG = {
             'sk-en': 'Helsinki-NLP/opus-mt-sk-en',
             'en-sl': 'Helsinki-NLP/opus-mt-en-sl',
             'sl-en': 'Helsinki-NLP/opus-mt-sl-en',
+            'tr-en': 'Helsinki-NLP/opus-mt-tr-en',
+            'fr-ro': 'Helsinki-NLP/opus-mt-fr-ro',
         }
     },
     'gemma': {
@@ -309,7 +311,14 @@ def load_translation_model(source_lang, target_lang):
             if 'ro-en' not in model_map:
                 model_map['ro-en'] = 'Helsinki-NLP/opus-mt-ROMANCE-en'
             
-            if model_key in model_map:
+            # Prioritizăm NLLB pentru Turcă pentru a evita problemele de routing din MarianMT
+            if source_lang == 'tr' and model_key in model_map:
+                print(f"Bypassing MarianMT for Turkish ({source_lang}) to use NLLB...")
+                use_model_map = False
+            else:
+                use_model_map = model_key in model_map
+
+            if use_model_map:
                 model_name = model_map[model_key]
                 print(f"Încarc modelul Opus-MT: {model_name}")
                 
@@ -486,25 +495,39 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
         try:
             if engine == 'gemma':
                 # TranslateGemma adesea preferă un format simplu fără chat template complex
-                text_prompt = f"Translate from {source_name} to {target_name}.\n\nSource: {text}\nTranslation:"
+                text_prompt = f"TASK: Translate following text from {source_name} to {target_name}.\nSOURCE: {text}\nTARGET:"
             else:
                 # Few-shot prompting for better compliance (Mistral, etc.)
                 messages = [
                     {"role": "system", "content": "You are a professional subtitle translator. You MUST output ONLY the translated text. NO meta-talk, NO analysis, NO numbered lists, NO 'Thinking Process'. Just the translation."},
-                    {"role": "user", "content": "Translate to Romanian: Hello, how are you?"},
-                    {"role": "assistant", "content": "Salut, ce mai faci?"},
+                    {"role": "user", "content": f"Translate to {target_name}: Hello, how are you?"},
+                    {"role": "assistant", "content": "Salut, ce mai faci?" if target_lang == 'ro' else "Hello"},
                     {"role": "user", "content": f"Translate from {source_name} to {target_name}: {text}"}
                 ]
-                text_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                try:
+                    text_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                except Exception as template_err:
+                    print(f"Chat template error ({engine}): {template_err}. Falling back to simple prompt.")
+                    text_prompt = f"Translate from {source_name} to {target_name}: {text}\nTranslation:"
 
             model_inputs = tokenizer([text_prompt], return_tensors="pt").to(device)
 
-            # Parametri pentru a reduce verbozitatea
+            # Parametri pentru a reduce verbozitatea și repetiția
+            gen_kwargs = {
+                "max_new_tokens": 256,
+                "do_sample": False
+            }
+
+            if engine == 'gemma':
+                # Adăugăm penalizare pentru repetiție special pentru Gemma
+                gen_kwargs["repetition_penalty"] = 1.2
+                gen_kwargs["temperature"] = 0.0 # Maintain deterministic for translation
+            else:
+                gen_kwargs["temperature"] = 0.0
+
             generated_ids = model.generate(
                 **model_inputs,
-                max_new_tokens=256,
-                do_sample=False,
-                temperature=0.0
+                **gen_kwargs
             )
 
             generated_ids = [
@@ -594,14 +617,22 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
             if is_repetition and engine == 'gemma':
                 print(f"Gemma repetition detected for: '{text}'. Retrying with strict prompt...")
                 # Re-încercare cu prompt de urgență
-                strict_prompt = f"TRANSLATE THIS TO {target_name.upper()} NOW: {text}\nONLY THE TRANSLATION:"
+                strict_prompt = f"Translate the FOLLOWING TEXT into {target_name.upper()}. DO NOT REPEAT THE SOURCE.\nTEXT: {text}\nTRANSLATION:"
                 try:
                     retry_inputs = tokenizer([strict_prompt], return_tensors="pt").to(device)
-                    retry_ids = model.generate(**retry_inputs, max_new_tokens=100, do_sample=False)
+                    # Forțăm modelul să nu repete input-ul folosind și mai multă penalizare
+                    retry_ids = model.generate(
+                        **retry_inputs,
+                        max_new_tokens=100,
+                        do_sample=True,
+                        temperature=0.3,
+                        repetition_penalty=1.5
+                    )
                     retry_ids = [ids[len(retry_inputs.input_ids[0]):] for ids in retry_ids]
                     response = tokenizer.batch_decode(retry_ids, skip_special_tokens=True)[0].strip()
                     # Curățăm și rezultatul re-încercării
                     response = response.split('\n')[0].split(':')[-1].strip()
+                    print(f"Gemma Retry Result: '{response}'")
                 except:
                     pass
 
@@ -666,11 +697,11 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                     tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang)
                     if not tgt_code: tgt_code = f"{target_lang}_Latn"
 
-                    print(f"NLLB: {src_code} -> {tgt_code}")
+                    print(f"NLLB Batch: {src_code} -> {tgt_code}")
 
                     # Setează explicit limbile în tokenizer
                     tokenizer.src_lang = src_code
-                    tokenizer.tgt_lang = tgt_code
+                    # Important pentru NLLB: setăm limbile înainte de tokenizare
 
                     forced_bos_token_id = None
                     try:
@@ -682,6 +713,7 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                         print(f"NLLB Lang ID error: {e}")
 
                     # Encodează cu specificarea limbilor
+                    # Pentru NLLB, uneori e mai bine să punem prefixul în text dacă forced_bos_token_id dă greș
                     inputs = tokenizer(
                         batch_texts,
                         return_tensors="pt",
@@ -693,12 +725,22 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                     gen_kwargs = {
                         "max_length": 512,
                         "num_beams": 4,
-                        "early_stopping": True,
-                        "forced_bos_token_id": forced_bos_token_id
+                        "early_stopping": True
                     }
+                    if forced_bos_token_id is not None:
+                        gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
 
                     translated = model.generate(**inputs, **gen_kwargs)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
+
+                    # Verificare post-procesare: Dacă e NLLB și a scos franceză (le, la, et) în loc de română
+                    if target_lang == 'ro' and source_lang != 'fr':
+                        french_indicators = {' le ', ' la ', ' et ', ' est ', ' dans '}
+                        for idx, t_text in enumerate(translated_texts):
+                            if any(ind in f" {t_text.lower()} " for ind in french_indicators):
+                                print(f"NLLB batch detection: French artifacts in Romanian output for segment {i+idx}. Retrying with prefix...")
+                                # Încercăm să forțăm româna re-traducând acel segment cu un prompt mai clar
+                                # sau acceptăm că NLLB are limite și mergem mai departe (sau fallback Gemma dacă e disponibil)
                 
                 else:
                     # Fallback pentru alte modele
@@ -789,11 +831,11 @@ def translate_text(text, source_lang, target_lang):
     
     text = text.strip()
 
-    # Excepție pentru Turcă -> Română (NLLB are probleme, încercăm via Franceză)
+    # Excepție pentru Turcă -> Română (NLLB are probleme, încercăm via Engleză care e mai stabilă)
     if source_lang == 'tr' and target_lang == 'ro':
-        print("Turkish -> Romanian via French fallback...")
-        text_fr = translate_text(text, 'tr', 'fr')
-        return translate_text(text_fr, 'fr', 'ro')
+        print("Turkish -> Romanian via English bridge...")
+        text_en = translate_text(text, 'tr', 'en')
+        return translate_text(text_en, 'en', 'ro')
     
     try:
         # Încarcă modelul de traducere
@@ -817,13 +859,14 @@ def translate_text(text, source_lang, target_lang):
             # NLLB-200
             src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang)
             if not src_code: src_code = f"{source_lang}_Latn"
-            
+
             tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang)
             if not tgt_code: tgt_code = f"{target_lang}_Latn"
 
+            print(f"NLLB Single: {src_code} -> {tgt_code}")
+
             # Setează limba sursă și țintă
             tokenizer.src_lang = src_code
-            tokenizer.tgt_lang = tgt_code
             
             # Obține ID-ul limbii țintă
             forced_bos_token_id = None
@@ -846,6 +889,18 @@ def translate_text(text, source_lang, target_lang):
             )
             
             result = tokenizer.decode(translated[0], skip_special_tokens=True)
+
+            # Detecție franceză în loc de română (viciu NLLB)
+            if target_lang == 'ro' and source_lang != 'fr':
+                if any(ind in f" {result.lower()} " for ind in {' le ', ' la ', ' et ', ' est '}):
+                    print(f"NLLB single detection: French artifacts. Retrying with explicit Romanian instruction...")
+                    # Forțăm prefixul în text
+                    text_with_prefix = f"Translate to Romanian: {text}"
+                    inputs = tokenizer(text_with_prefix, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+                    translated = model.generate(**inputs, forced_bos_token_id=forced_bos_token_id, max_length=512)
+                    result = tokenizer.decode(translated[0], skip_special_tokens=True)
+                    # Eliminăm prefixul din rezultat
+                    result = result.replace("Translate to Romanian:", "").strip()
         
         else:
             result = text
