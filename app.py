@@ -483,24 +483,20 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
             continue
 
         # Prompt specific pentru TranslateGemma sau general LLM
-        if engine == 'gemma':
-            # TranslateGemma are un format specific foarte strict, folosim un format simplu fără 'role' dacă e posibil
-            # sau un format compatibil cu instrucțiunile lor oficiale
-            prompt = f"Translate from {source_name} to {target_name}.\n\nSource: {text}\nTranslation:"
-            messages = [
-                {"role": "user", "content": prompt}
-            ]
-        else:
-            # Few-shot prompting for better compliance (Mistral, etc.)
-            messages = [
-                {"role": "system", "content": "You are a professional subtitle translator. You MUST output ONLY the translated text. NO meta-talk, NO analysis, NO numbered lists, NO 'Thinking Process'. Just the translation."},
-                {"role": "user", "content": "Translate to Romanian: Hello, how are you?"},
-                {"role": "assistant", "content": "Salut, ce mai faci?"},
-                {"role": "user", "content": f"Translate from {source_name} to {target_name}: {text}"}
-            ]
-
         try:
-            text_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            if engine == 'gemma':
+                # TranslateGemma adesea preferă un format simplu fără chat template complex
+                text_prompt = f"Translate from {source_name} to {target_name}.\n\nSource: {text}\nTranslation:"
+            else:
+                # Few-shot prompting for better compliance (Mistral, etc.)
+                messages = [
+                    {"role": "system", "content": "You are a professional subtitle translator. You MUST output ONLY the translated text. NO meta-talk, NO analysis, NO numbered lists, NO 'Thinking Process'. Just the translation."},
+                    {"role": "user", "content": "Translate to Romanian: Hello, how are you?"},
+                    {"role": "assistant", "content": "Salut, ce mai faci?"},
+                    {"role": "user", "content": f"Translate from {source_name} to {target_name}: {text}"}
+                ]
+                text_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
             model_inputs = tokenizer([text_prompt], return_tensors="pt").to(device)
 
             # Parametri pentru a reduce verbozitatea
@@ -647,6 +643,15 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
             try:
                 if model_type == 'llm':
                     translated_texts = translate_with_llm(batch_texts, source_lang, target_lang, engine=engine)
+
+                    # Verificăm dacă Gemma a repetat turca (eșec)
+                    if engine == 'gemma' and source_lang == 'tr' and target_lang == 'ro':
+                        for j, res in enumerate(translated_texts):
+                            # Dacă e identic sau pare turcă, folosim fallback Transformers (indirect via French)
+                            if res.strip().lower() == batch_texts[j].strip().lower():
+                                print(f"Gemma TR->RO failure detected at segment {i+j}. Using Transformers fallback...")
+                                translated_texts[j] = translate_text(batch_texts[j], 'tr', 'ro')
+
                 elif model_type == 'marian':
                     # MarianMT/Opus-MT - direct translation
                     inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
@@ -783,6 +788,12 @@ def translate_text(text, source_lang, target_lang):
         return text
     
     text = text.strip()
+
+    # Excepție pentru Turcă -> Română (NLLB are probleme, încercăm via Franceză)
+    if source_lang == 'tr' and target_lang == 'ro':
+        print("Turkish -> Romanian via French fallback...")
+        text_fr = translate_text(text, 'tr', 'fr')
+        return translate_text(text_fr, 'fr', 'ro')
     
     try:
         # Încarcă modelul de traducere
@@ -804,40 +815,35 @@ def translate_text(text, source_lang, target_lang):
             
         elif model_type == 'nllb':
             # NLLB-200
-            src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
-            tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
+            src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang)
+            if not src_code: src_code = f"{source_lang}_Latn"
             
-            # Setează limba sursă
-            if hasattr(tokenizer, 'src_lang'):
-                tokenizer.src_lang = src_code
+            tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang)
+            if not tgt_code: tgt_code = f"{target_lang}_Latn"
+
+            # Setează limba sursă și țintă
+            tokenizer.src_lang = src_code
+            tokenizer.tgt_lang = tgt_code
             
             # Obține ID-ul limbii țintă
             forced_bos_token_id = None
             try:
-                if hasattr(tokenizer, 'get_lang_id'):
-                    forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
-                elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
+                if hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
                     forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
+                elif hasattr(tokenizer, 'get_lang_id'):
+                    forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
             except:
                 pass
             
             inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
             
-            if forced_bos_token_id is not None:
-                translated = model.generate(
-                    **inputs,
-                    forced_bos_token_id=forced_bos_token_id,
-                    max_length=512,
-                    num_beams=4,
-                    early_stopping=True
-                )
-            else:
-                translated = model.generate(
-                    **inputs,
-                    max_length=512,
-                    num_beams=4,
-                    early_stopping=True
-                )
+            translated = model.generate(
+                **inputs,
+                forced_bos_token_id=forced_bos_token_id,
+                max_length=512,
+                num_beams=4,
+                early_stopping=True
+            )
             
             result = tokenizer.decode(translated[0], skip_special_tokens=True)
         
