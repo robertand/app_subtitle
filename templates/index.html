@@ -1675,8 +1675,14 @@
                     <select id="translationEngineSelect">
                         <option value="transformers">Transformers (Rapid)</option>
                         <option value="gemma">LLM Gemma 12B (Best)</option>
-                        <option value="mistral">LLM Mistral</option>
+                        <option value="mistral">LLM Mistral (Precise)</option>
                     </select>
+                </div>
+
+                <div class="translation-selector" style="grid-column: span 2; margin-top: 10px;">
+                    <label for="translationInstructions"><i class="fas fa-comment-dots"></i> Instrucțiuni speciale (Prompt):</label>
+                    <textarea id="translationInstructions" placeholder="Ex: Tradu într-un stil informal. Nu traduce numele proprii. Păstrează tonul dramatic."
+                              style="width: 100%; min-height: 80px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: inherit; font-size: 0.9rem; resize: vertical;"></textarea>
                 </div>
                 
                 <div class="translation-status" id="translationStatus">
@@ -1822,19 +1828,26 @@
                 <p>Se încarcă traducerile existente...</p>
             </div>
             
-            <div class="new-translation-controls">
-                <select id="newTranslationSelect">
-                    <option value="">-- Alege o limbă nouă --</option>
-                    <!-- Languages will be populated by JavaScript -->
-                </select>
-                <select id="newTranslationEngineSelect" style="max-width: 150px;">
-                    <option value="transformers">Transformers</option>
-                    <option value="gemma">Gemma 12B LLM</option>
-                    <option value="mistral">Mistral LLM</option>
-                </select>
-                <button class="btn" onclick="addNewTranslation()" id="addTranslationBtn">
-                    <i class="fas fa-plus"></i> Adaugă Traducere
-                </button>
+            <div class="new-translation-controls" style="display: flex; flex-direction: column; gap: 15px;">
+                <div style="display: flex; gap: 10px; width: 100%;">
+                    <select id="newTranslationSelect" style="flex: 1;">
+                        <option value="">-- Alege o limbă nouă --</option>
+                        <!-- Languages will be populated by JavaScript -->
+                    </select>
+                    <select id="newTranslationEngineSelect" style="max-width: 150px;">
+                        <option value="transformers">Transformers</option>
+                        <option value="gemma">Gemma 12B LLM</option>
+                        <option value="mistral">Mistral LLM</option>
+                    </select>
+                    <button class="btn" onclick="addNewTranslation()" id="addTranslationBtn">
+                        <i class="fas fa-plus"></i> Adaugă Traducere
+                    </button>
+                </div>
+                <div style="width: 100%;">
+                    <label style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 5px;">Instrucțiuni pentru această traducere:</label>
+                    <textarea id="newTranslationInstructions" placeholder="Instrucțiuni specifice (prompt)..."
+                              style="width: 100%; min-height: 60px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: inherit; font-size: 0.85rem; resize: vertical;"></textarea>
+                </div>
             </div>
         </div>
         
@@ -3102,6 +3115,7 @@
                         language: currentLanguage,
                         translation_target: translationTarget || '',
                         translation_engine: document.getElementById('translationEngineSelect').value,
+                    translation_instructions: document.getElementById('translationInstructions').value,
                         adjust_segmentation: adjustSegmentationCheckbox.checked,
                         extract_audio_only: extractAudioOnlyCheckbox.checked
                     })
@@ -3664,7 +3678,8 @@
                     body: JSON.stringify({
                         target_lang: targetLang,
                         source_lang: langCode,
-                        translation_engine: document.getElementById('newTranslationEngineSelect').value
+                        translation_engine: document.getElementById('newTranslationEngineSelect').value,
+                        translation_instructions: document.getElementById('newTranslationInstructions').value
                     })
                 });
                 

@@ -464,7 +464,7 @@ def load_llm_model(engine='gemma'):
             print(f"✗ Eroare la încărcarea LLM {engine}: {str(e)}")
             return None
 
-def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
+def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instructions=None):
     """Traduce texte folosind un model LLM (Qwen/Mistral)"""
     model_data = load_llm_model(engine)
     if not model_data:
@@ -486,14 +486,20 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
 
         # Prompt specific pentru TranslateGemma sau general LLM
         try:
+            instr_part = f"\nInstructions: {instructions}" if instructions else ""
+
             if engine == 'gemma':
                 # Format oficial TranslateGemma:
                 # Translate the following text from {src_lang} to {tgt_lang}.\n{src_lang}: {text}\n{tgt_lang}:
-                text_prompt = f"Translate the following text from {source_name} to {target_name}.\n{source_name}: {text}\n{target_name}:"
+                text_prompt = f"Translate the following text from {source_name} to {target_name}.{instr_part}\n{source_name}: {text}\n{target_name}:"
             else:
                 # Few-shot prompting for better compliance (Mistral, etc.)
+                system_content = "You are a professional subtitle translator. You MUST output ONLY the translated text. NO meta-talk, NO analysis, NO numbered lists, NO 'Thinking Process'. Just the translation."
+                if instructions:
+                    system_content += f" Additional instructions: {instructions}"
+
                 messages = [
-                    {"role": "system", "content": "You are a professional subtitle translator. You MUST output ONLY the translated text. NO meta-talk, NO analysis, NO numbered lists, NO 'Thinking Process'. Just the translation."},
+                    {"role": "system", "content": system_content},
                     {"role": "user", "content": f"Translate to {target_name}: Hello, how are you?"},
                     {"role": "assistant", "content": "Salut, ce mai faci?" if target_lang == 'ro' else "Hello"},
                     {"role": "user", "content": f"Translate from {source_name} to {target_name}: {text}"}
@@ -502,7 +508,7 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
                     text_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                 except Exception as template_err:
                     print(f"Chat template error ({engine}): {template_err}. Falling back to simple prompt.")
-                    text_prompt = f"Translate from {source_name} to {target_name}: {text}\nTranslation:"
+                    text_prompt = f"Translate from {source_name} to {target_name}: {text}{instr_part}\nTranslation:"
 
             # Asigurăm că input-ul este corect formatat pentru model.generate
             inputs = tokenizer(text_prompt, return_tensors="pt").to(device)
@@ -635,7 +641,7 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma'):
 
     return translated_texts
 
-def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers'):
+def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None):
     """Traduce un batch de segmente păstrând timecode-ul"""
     if not segments or source_lang == target_lang:
         return segments
@@ -644,9 +650,9 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
     if source_lang == 'tr' and target_lang == 'ro' and engine == 'transformers':
         print("Turkish -> Romanian Batch via bridge...")
         # Traducem în engleză batch-ul (folosind MarianMT dacă e disponibil)
-        segments_en = translate_segment_batch(segments, 'tr', 'en', batch_size=batch_size, engine=engine)
+        segments_en = translate_segment_batch(segments, 'tr', 'en', batch_size=batch_size, engine=engine, instructions=instructions)
         # Apoi traducem din engleză în română (folosind MarianMT)
-        return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine)
+        return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine, instructions=instructions)
     
     try:
         if engine in ['gemma', 'mistral']:
@@ -672,7 +678,7 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
             
             try:
                 if model_type == 'llm':
-                    translated_texts = translate_with_llm(batch_texts, source_lang, target_lang, engine=engine)
+                    translated_texts = translate_with_llm(batch_texts, source_lang, target_lang, engine=engine, instructions=instructions)
 
                     # Verificăm dacă Gemma a repetat turca (eșec)
                     if engine == 'gemma' and source_lang == 'tr' and target_lang == 'ro':
@@ -762,7 +768,7 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
         print(f"✗ Eroare la traducere: {str(e)}")
         return segments
 
-def translate_segments(segments, source_lang, target_lang, engine='transformers'):
+def translate_segments(segments, source_lang, target_lang, engine='transformers', instructions=None):
     """Traduce toate segmentele păstrând timecode-ul și structura"""
     if not segments or source_lang == target_lang:
         return segments
@@ -789,7 +795,7 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
         # Traduce segmentele scurte în batch-uri
         if short_segments:
             print(f"Traduc {len(short_segments)} segmente scurte...")
-            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=10, engine=engine)
+            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=10, engine=engine, instructions=instructions)
             translated_segments.extend(translated_short)
         
         # Traduce segmentele lungi individual pentru mai multă precizie
@@ -798,7 +804,7 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
             for seg in long_segments:
                 try:
                     # Traduce fiecare segment lung individual
-                    batch_result = translate_segment_batch([seg], source_lang, target_lang, batch_size=1, engine=engine)
+                    batch_result = translate_segment_batch([seg], source_lang, target_lang, batch_size=1, engine=engine, instructions=instructions)
                     if batch_result:
                         translated_segments.append(batch_result[0])
                     else:
@@ -2088,7 +2094,8 @@ def chunk_upload_status(session_id):
         return jsonify({'error': f'Eroare: {str(e)}'}), 500
 
 def background_processing_task(original_path, model_name, language, translation_target,
-                             should_adjust_segmentation, process_id, extract_audio_only, original_filename, translation_engine='transformers'):
+                             should_adjust_segmentation, process_id, extract_audio_only, original_filename,
+                             translation_engine='transformers', translation_instructions=None):
     """Task de procesare care rulează în background"""
     try:
         update_task_status(process_id, 'processing', 5, 'Inițializare procesare...')
@@ -2142,7 +2149,7 @@ def background_processing_task(original_path, model_name, language, translation_
             update_task_status(process_id, 'processing', 90, f'Traducere în {translation_target} ({translation_engine})...')
             translation_start = time.time()
             try:
-                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine)
+                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions)
                 translation_time = time.time() - translation_start
                 for i, segment in enumerate(translated):
                     translated_segments.append({
@@ -2197,6 +2204,7 @@ def background_processing_task(original_path, model_name, language, translation_
             'language_used': detected_language,
             'translation_used': translation_used,
             'is_translated': bool(translation_used),
+            'translation_target': translation_used,
             'process_id': process_id,
             'video_preview_url': video_preview_url,
             'image_preview_url': image_preview_url,
@@ -2205,7 +2213,9 @@ def background_processing_task(original_path, model_name, language, translation_
             'original_format': original_path.rsplit('.', 1)[-1].lower() if '.' in original_path else 'unknown',
             'model_used': model_name,
             'processing_time': 'Finalizat',
-            'translation_time': f"{translation_time:.1f}s" if translation_time else None
+            'translation_time': f"{translation_time:.1f}s" if translation_time else None,
+            'total_duration': segments[-1]['end'] if segments else 0,
+            'video_duration': duration if is_video else None
         }
 
         update_task_status(process_id, 'completed', 100, 'Procesare finalizată!', final_result)
@@ -2248,7 +2258,8 @@ def chunk_upload_process(session_id):
             process_id,
             data.get('extract_audio_only', False),
             session_info['file_name'],
-            data.get('translation_engine', 'transformers')
+            data.get('translation_engine', 'transformers'),
+            data.get('translation_instructions')
         ))
         thread.start()
 
@@ -2631,6 +2642,7 @@ def upload_file():
     language = request.form.get('language', session.get('selected_language', 'auto'))
     translation_target = request.form.get('translation_target', session.get('translation_target', None))
     translation_engine = request.form.get('translation_engine', 'transformers')
+    translation_instructions = request.form.get('translation_instructions', None)
     should_adjust_segmentation = request.form.get('adjust_segmentation', 'true').lower() == 'true'
     
     if model_name not in AVAILABLE_MODELS:
@@ -2700,7 +2712,7 @@ def upload_file():
             translation_start = time.time()
 
             try:
-                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine)
+                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions)
                 translation_time = time.time() - translation_start
 
                 for i, segment in enumerate(translated):
@@ -2973,6 +2985,7 @@ def translate_existing():
         data = request.get_json()
         target_lang = data.get('target_lang')
         engine = data.get('translation_engine', 'transformers')
+        instructions = data.get('translation_instructions')
         
         if not target_lang or target_lang not in TRANSLATION_LANGUAGES:
             return jsonify({'error': 'Limbă țintă invalidă'}), 400
@@ -2991,7 +3004,7 @@ def translate_existing():
                 'text': seg['text']
             })
         
-        translated_segments = translate_segments(whisper_segments, detected_language, target_lang, engine=engine)
+        translated_segments = translate_segments(whisper_segments, detected_language, target_lang, engine=engine, instructions=instructions)
         
         formatted_segments = []
         for i, segment in enumerate(translated_segments):
