@@ -21,7 +21,13 @@ from pathlib import Path
 import hashlib
 import math
 import traceback
-from silero_vad import get_speech_timestamps, load_silero_vad
+# Silero VAD Integration with fallback
+SILERO_AVAILABLE = False
+try:
+    from silero_vad import get_speech_timestamps, load_silero_vad
+    SILERO_AVAILABLE = True
+except ImportError:
+    print("⚠️ silero-vad is not installed. VAD-based chunking will be disabled.")
 
 # Configurare director de date local
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
@@ -1334,11 +1340,18 @@ def write_srt(segments, output_path):
 def load_vad_model():
     """Încarcă modelul Silero VAD"""
     global vad_model
+    if not SILERO_AVAILABLE:
+        return None
+
     with vad_lock:
         if vad_model is None:
-            print("Se încarcă modelul Silero VAD...")
-            vad_model = load_silero_vad()
-            print("✓ Model Silero VAD încărcat")
+            try:
+                print("Se încarcă modelul Silero VAD...")
+                vad_model = load_silero_vad()
+                print("✓ Model Silero VAD încărcat")
+            except Exception as e:
+                print(f"⚠️ Error loading Silero VAD: {e}")
+                return None
     return vad_model
 
 def get_vad_segments(audio_path, min_speech_duration=0.5, min_silence_duration=0.5):

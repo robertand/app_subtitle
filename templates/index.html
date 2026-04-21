@@ -2072,7 +2072,6 @@
         const loadingTranslationInfo = document.getElementById('loadingTranslationInfo');
         const processingChunksInfo = document.getElementById('processingChunksInfo');
         const toggleSegmentsTranslationBtn = document.getElementById('toggleSegmentsTranslation');
-        const downloadTranslatedBtn = document.getElementById('downloadTranslatedBtn');
         const mainDownloadTranslatedBtn = document.getElementById('mainDownloadTranslatedBtn');
         const multipleTranslationsPanel = document.getElementById('multipleTranslationsPanel');
         const translationsListContainer = document.getElementById('translationsListContainer');
@@ -3314,7 +3313,6 @@
                 
                 // Afișează butoanele pentru traducere
                 toggleSegmentsTranslationBtn.style.display = 'inline-flex';
-                downloadTranslatedBtn.style.display = 'inline-flex';
                 mainDownloadTranslatedBtn.style.display = 'inline-flex';
                 
                 // Actualizează numele fișierului tradus
@@ -3325,7 +3323,6 @@
                 
                 // Ascunde butoanele pentru traducere
                 toggleSegmentsTranslationBtn.style.display = 'none';
-                downloadTranslatedBtn.style.display = 'none';
                 mainDownloadTranslatedBtn.style.display = 'none';
             }
             
@@ -3597,7 +3594,6 @@
                 displaySegments(originalSegments);
                 showToast('Se afișează segmentele originale', 'info');
 
-                downloadTranslatedBtn.style.display = 'none';
                 mainDownloadTranslatedBtn.style.display = 'none';
             } else {
                 try {
@@ -3623,7 +3619,6 @@
 
                     if (multipleTranslations[langCode].srt_filename) {
                         translatedSrtFilename = multipleTranslations[langCode].srt_filename;
-                        downloadTranslatedBtn.style.display = 'inline-flex';
                         mainDownloadTranslatedBtn.style.display = 'inline-flex';
                     }
 
@@ -3696,7 +3691,6 @@
                     refreshTranslationsList();
                     
                     // Afișează butoanele de descărcare pentru traducere
-                    downloadTranslatedBtn.style.display = 'inline-flex';
                     mainDownloadTranslatedBtn.style.display = 'inline-flex';
 
                     setTimeout(() => {
@@ -4009,7 +4003,6 @@
             toggleSegmentsTranslationBtn.innerHTML = '<i class="fas fa-language"></i> Afișează Traducerea';
             toggleSegmentsTranslationBtn.classList.remove('active');
             toggleSegmentsTranslationBtn.style.display = 'none';
-            downloadTranslatedBtn.style.display = 'none';
             document.getElementById('audioOnlyResult').style.display = 'none';
             document.getElementById('transcriptionResult').style.display = 'block';
             document.getElementById('transcriptionButtons').style.display = 'flex';
