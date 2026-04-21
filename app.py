@@ -2177,8 +2177,10 @@ def background_processing_task(original_path, model_name, language, translation_
         video_preview_url = None
         image_preview_url = None
         is_video = any(original_path.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mov', '.mkv', '.mxf', '.m4v', '.webm', '.flv', '.wmv'])
+        duration = 0
 
         if is_video:
+            duration = get_video_duration(original_path)
             update_task_status(process_id, 'processing', 95, 'Pregătire preview...')
             try:
                 # Extrage imagine preview (JPG)
