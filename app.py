@@ -47,6 +47,51 @@ app.config['PROCESS_TIMEOUT'] = 7200  # 2 ore timeout pentru procesare
 loaded_models = {}
 model_lock = threading.Lock()
 
+def unload_whisper_models():
+    """Eliberează VRAM prin descărcarea modelelor Whisper"""
+    global loaded_models
+    with model_lock:
+        if not loaded_models:
+            return
+
+        print("🧹 Eliberare VRAM: Descărcare modele Whisper...")
+        for name in list(loaded_models.keys()):
+            model_data = loaded_models.pop(name)
+            if 'model' in model_data:
+                del model_data['model']
+
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print("✨ CUDA cache eliberat (Whisper)")
+
+def unload_translation_models(keep_engine=None):
+    """Eliberează VRAM prin descărcarea modelelor de traducere"""
+    global translation_models
+    with translation_lock:
+        if not translation_models:
+            return
+
+        to_remove = []
+        for key in list(translation_models.keys()):
+            if keep_engine and key == f"llm-{keep_engine}":
+                continue
+            to_remove.append(key)
+
+        if to_remove:
+            print(f"🧹 Eliberare VRAM: Descărcare {len(to_remove)} modele traducere standard...")
+            for key in to_remove:
+                model_data = translation_models.pop(key)
+                if 'model' in model_data:
+                    del model_data['model']
+
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print("✨ CUDA cache eliberat (Traducere)")
+
 # Modele de traducere
 translation_models = {}
 translation_lock = threading.Lock()
@@ -396,6 +441,24 @@ def load_llm_model(engine='gemma'):
         if model_key in translation_models:
             return translation_models[model_key]
 
+        # Eliberăm modelele Whisper și ALTE modele de traducere (non-LLM) înainte de încărcare
+        unload_whisper_models()
+        # Dar eliberăm modelele standard doar dacă suntem pe GPU, pe CPU nu contează așa mult
+        if torch.cuda.is_available():
+            # keep_engine=None pentru că încă nu l-am pus în dict
+            # Această funcție este chemată în interiorul translation_lock, deci suntem safe
+            to_remove = []
+            for k in list(translation_models.keys()):
+                if k != model_key:
+                    to_remove.append(k)
+
+            if to_remove:
+                print(f"🧹 Eliberare VRAM: Descărcare {len(to_remove)} modele vechi pentru a face loc LLM...")
+                for k in to_remove:
+                    m_data = translation_models.pop(k)
+                    if 'model' in m_data: del m_data['model']
+                torch.cuda.empty_cache()
+
         print(f"Se încarcă LLM: {engine}...")
         start_time = time.time()
 
@@ -429,7 +492,9 @@ def load_llm_model(engine='gemma'):
                     )
                     print(f"✨ Folosesc cuantizare 4bit pentru {engine}")
                 except Exception as bnb_err:
-                    print(f"ℹ️ bitsandbytes nu poate fi folosit: {bnb_err}. Folosesc FP16 standard.")
+                    print(f"⚠️ bitsandbytes nu poate fi folosit: {bnb_err}.")
+                    print("⚠️ ACEST LUCRU VA CAUZA CONSUM MARE DE VRAM ȘI POSIBILĂ OFFLOAD PE CPU (LENT).")
+                    print("⚠️ Instalează bitsandbytes: pip install bitsandbytes")
                     if "quantization_config" in model_kwargs:
                         del model_kwargs["quantization_config"]
 
@@ -464,7 +529,14 @@ def load_llm_model(engine='gemma'):
                 'model_type': 'llm'
             }
 
-            print(f"✓ LLM {engine} încărcat în {load_time:.1f}s")
+            print(f"✓ LLM {engine} încărcat în {load_time:.1f}s pe {device}")
+
+            # Log memory usage if on CUDA
+            if device == "cuda":
+                mem_allocated = torch.cuda.memory_allocated() / 1024**3
+                mem_reserved = torch.cuda.memory_reserved() / 1024**3
+                print(f"📊 CUDA Mem: Allocated: {mem_allocated:.2f}GB, Reserved: {mem_reserved:.2f}GB")
+
             return translation_models[model_key]
         except Exception as e:
             print(f"✗ Eroare la încărcarea LLM {engine}: {str(e)}")
@@ -538,6 +610,10 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
             generated_ids = generated_ids[0][inputs.input_ids.shape[-1]:]
 
             response = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+            # Eliberăm tensorii imediat
+            del inputs
+            del generated_ids
 
             # Curățare post-generare pentru halucinațiile persistente
             response = re.sub(r'<(thought|thinking)>.*?</\1>', '', response, flags=re.DOTALL | re.IGNORECASE)
@@ -645,6 +721,10 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
             print(f"LLM translation error: {e}")
             translated_texts.append(text)
 
+    # Curățăm VRAM după batch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return translated_texts
 
 def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None):
@@ -688,11 +768,25 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
 
                     # Verificăm dacă Gemma a repetat turca (eșec)
                     if engine == 'gemma' and source_lang == 'tr' and target_lang == 'ro':
+                        failed_indices = []
                         for j, res in enumerate(translated_texts):
-                            # Dacă e identic sau pare turcă, folosim fallback Transformers (indirect via French)
+                            # Dacă e identic sau pare turcă, folosim fallback Transformers
                             if res.strip().lower() == batch_texts[j].strip().lower():
-                                print(f"Gemma TR->RO failure detected at segment {i+j}. Using Transformers fallback...")
-                                translated_texts[j] = translate_text(batch_texts[j], 'tr', 'ro')
+                                failed_indices.append(j)
+
+                        if failed_indices:
+                            print(f"Gemma TR->RO failure detected for {len(failed_indices)} segments in batch. Using Batch Transformers fallback...")
+                            # Colectăm textele eșuate pentru a le traduce în batch, mult mai rapid decât translate_text individual
+                            failed_batch = []
+                            for idx in failed_indices:
+                                failed_batch.append({'text': batch_texts[idx]})
+
+                            # Traducem batch-ul de eșecuri folosind bridge-ul optimizat de transformers
+                            fallback_results = translate_segment_batch(failed_batch, 'tr', 'ro', engine='transformers')
+
+                            # Reintroducem rezultatele traduse corect în batch-ul curent
+                            for idx, fb_res in zip(failed_indices, fallback_results):
+                                translated_texts[idx] = fb_res['text']
 
                 elif model_type == 'marian':
                     # MarianMT/Opus-MT - direct translation
@@ -743,11 +837,18 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
 
                     # Detecție viciu NLLB (ieșire în franceză)
                     if target_lang == 'ro' and source_lang != 'fr':
+                        failed_indices = []
                         french_indicators = {' le ', ' la ', ' et ', ' est ', ' dans '}
                         for idx, t_text in enumerate(translated_texts):
                             if any(ind in f" {t_text.lower()} " for ind in french_indicators):
-                                print(f"NLLB artifacts detected in segment {i+idx}. Retrying via bridge...")
-                                translated_texts[idx] = translate_text(batch_texts[idx], source_lang, target_lang)
+                                failed_indices.append(idx)
+
+                        if failed_indices:
+                            print(f"NLLB artifacts detected for {len(failed_indices)} segments. Retrying via optimized Batch bridge...")
+                            failed_batch = [{'text': batch_texts[idx]} for idx in failed_indices]
+                            fallback_results = translate_segment_batch(failed_batch, source_lang, target_lang, engine='transformers')
+                            for idx, fb_res in zip(failed_indices, fallback_results):
+                                translated_texts[idx] = fb_res['text']
                 
                 else:
                     # Fallback pentru alte modele
@@ -779,6 +880,10 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
     if not segments or source_lang == target_lang:
         return segments
     
+    # Dacă folosim un LLM, descărcăm modelele Whisper pentru a face loc în VRAM
+    if engine in ['gemma', 'mistral']:
+        unload_whisper_models()
+
     print(f"Încep traducerea din {source_lang} în {target_lang} ({engine})...")
     print(f"Număr segmente: {len(segments)}")
     start_time = time.time()
@@ -801,7 +906,9 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
         # Traduce segmentele scurte în batch-uri
         if short_segments:
             print(f"Traduc {len(short_segments)} segmente scurte...")
-            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=10, engine=engine, instructions=instructions)
+            # Pentru LLM folosim un batch mai mic pentru a evita OOM (Out of Memory)
+            effective_batch_size = 5 if engine in ['gemma', 'mistral'] else 10
+            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=effective_batch_size, engine=engine, instructions=instructions)
             translated_segments.extend(translated_short)
         
         # Traduce segmentele lungi individual pentru mai multă precizie
