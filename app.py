@@ -104,6 +104,7 @@ upload_lock = threading.Lock()
 processing_tasks = {}
 tasks_lock = threading.Lock()
 
+
 # Model VAD (Silero)
 vad_model = None
 vad_lock = threading.Lock()
@@ -1902,11 +1903,28 @@ def process_large_file(file_path, model_name, language, translation_target,
 
                 # Extrage audio window
                 audio_chunk_path = os.path.join(audio_chunks_dir, f'chunk_{i:04d}.wav')
-                cmd = [
-                    'ffmpeg', '-ss', str(start_window), '-t', str(length_window),
-                    '-i', full_audio_path, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', '-y', audio_chunk_path
-                ]
-                subprocess.run(cmd, check=True, capture_output=True)
+
+                # Încarcă și normalizează segmentul (tehnică din Fish Speech Exporter/TTS Preparator)
+                try:
+                    # Folosim torchaudio pentru a citi exact segmentul dorit
+                    waveform, sample_rate = torchaudio.load(full_audio_path, frame_offset=int(start_window * 16000), num_frames=int(length_window * 16000))
+
+                    # Normalizare RMS (din codul sursă furnizat)
+                    rms = torch.sqrt(torch.mean(waveform ** 2))
+                    if rms > 0:
+                        waveform = waveform * (0.1 / rms)
+                        waveform = torch.clamp(waveform, -1.0, 1.0)
+
+                    # Salvează chunk-ul normalizat
+                    torchaudio.save(audio_chunk_path, waveform, sample_rate)
+                except Exception as e:
+                    print(f"Eroare la extragerea/normalizarea segmentului {i} cu torchaudio: {e}")
+                    # Fallback la ffmpeg dacă torchaudio eșuează
+                    cmd = [
+                        'ffmpeg', '-ss', str(start_window), '-t', str(length_window),
+                        '-i', full_audio_path, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', '-y', audio_chunk_path
+                    ]
+                    subprocess.run(cmd, check=True, capture_output=True)
 
                 if os.path.exists(audio_chunk_path) and os.path.getsize(audio_chunk_path) > 100:
                     try:
@@ -2472,6 +2490,7 @@ def save_edits():
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/get_existing_translations')
 def get_existing_translations():

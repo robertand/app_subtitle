@@ -1709,6 +1709,7 @@
                 </div>
             </div>
             
+
             <!-- Language & Segmentation -->
             <div class="settings-card">
                 <h3><i class="fas fa-language"></i> Setări Limbă și Segmentare</h3>
@@ -2141,6 +2142,7 @@
             // Încarcă limbile pentru traduceri multiple
             loadNewTranslationLanguages();
             
+
             // Event listeners pentru video
             videoPreview.addEventListener('timeupdate', function() {
                 const currentTime = videoPreview.currentTime;
@@ -3382,8 +3384,10 @@
                 
                 // Arată butonul pentru traduceri multiple
                 showMultipleTranslationsBtn.style.display = 'inline-flex';
+
             }, 500);
         }
+
         
         // Restul funcțiilor rămân la fel (displaySegments, toggleSegmentsTranslation, etc.)
         // ... (codul rămas este identic cu cel din versiunea anterioară)
@@ -4010,6 +4014,7 @@
             mainDownloadTranslatedBtn.style.display = 'none';
             showMultipleTranslationsBtn.style.display = 'inline-flex';
             
+
             videoPreview.src = '';
             videoPreview.style.display = 'none';
             imagePreview.src = '';
