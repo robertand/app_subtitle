@@ -16,6 +16,10 @@ import torchaudio
 import numpy as np
 import re
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, MarianMTModel, MarianTokenizer
+import docx
+from docx import Document
+from docx.shared import Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 import shutil
 from pathlib import Path
 import hashlib
@@ -103,6 +107,146 @@ upload_lock = threading.Lock()
 # Managementul task-urilor în background
 processing_tasks = {}
 tasks_lock = threading.Lock()
+
+def convert_to_romanian_legacy(text):
+    """
+    Convertește diacriticele românești moderne (comma-below)
+    în diacriticele legacy/acceptate (cedilla-below).
+    ș (U+0219) -> ş (U+015F)
+    ț (U+021B) -> ț (U+0163)
+    """
+    mapping = {
+        'ș': 'ş',
+        'Ș': 'Ş',
+        'ț': 'ţ',
+        'Ț': 'Ţ'
+    }
+    for search, replace in mapping.items():
+        text = text.replace(search, replace)
+
+    # Space before !, ?, ?! (Pro TV requirement)
+    text = re.sub(r'([^\s])([!?])', r'\1 \2', text)
+    # Ensure no double spaces created
+    text = re.sub(r'\s+', ' ', text)
+
+    return text.strip()
+
+def wrap_text(text, max_chars=38):
+    """Împarte textul în linii care să nu depășească max_chars"""
+    words = text.split()
+    lines = []
+    current_line = []
+    current_length = 0
+
+    for word in words:
+        if current_length + len(word) + (1 if current_line else 0) <= max_chars:
+            current_line.append(word)
+            current_length += len(word) + (1 if current_line else 0)
+        else:
+            if current_line:
+                lines.append(" ".join(current_line))
+            current_line = [word]
+            current_length = len(word)
+
+    if current_line:
+        lines.append(" ".join(current_line))
+
+    return lines
+
+def generate_docx_export(process_id, segments, metadata):
+    """
+    Generează un fișier DOCX conform cerințelor de traducător.
+    """
+    try:
+        doc = Document()
+
+        # Setări font
+        style = doc.styles['Normal']
+        font = style.font
+        font.name = 'Arial'
+        font.size = Pt(12)
+
+        # Titlu serial (MAJUSCULE)
+        if metadata.get('title'):
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(metadata['title'].upper())
+            run.bold = True
+
+        # Seria și episodul
+        if metadata.get('series') or metadata.get('episode'):
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            series_text = f"Seria {metadata['series']}" if metadata.get('series') else ""
+            episode_text = f"episodul {metadata['episode']}" if metadata.get('episode') else ""
+            connector = ", " if series_text and episode_text else ""
+            p.add_run(f"{series_text}{connector}{episode_text}")
+
+        doc.add_paragraph() # Spațiu
+
+        # Traducerea și adaptarea
+        if metadata.get('translator'):
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.add_run("Traducerea și adaptarea")
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(metadata['translator'].upper())
+            run.bold = True
+            doc.add_paragraph()
+
+        # Segmentele de subtitrare
+        max_chars = int(metadata.get('max_chars', 38))
+        use_legacy = metadata.get('use_legacy', True)
+
+        for seg in segments:
+            text = seg['text']
+            if use_legacy:
+                text = convert_to_romanian_legacy(text)
+
+            wrapped_lines = wrap_text(text, max_chars)
+
+            p = doc.add_paragraph()
+            for i, line in enumerate(wrapped_lines):
+                p.add_run(line)
+                if i < len(wrapped_lines) - 1:
+                    p.add_run("\n")
+
+        # Final episod
+        if metadata.get('series') and metadata.get('episode'):
+            doc.add_paragraph()
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(f"SFÂRŞITUL EPISODULUI {metadata['episode']}, SERIA {metadata['series']}".upper())
+            run.bold = True
+
+        # Redactor
+        if metadata.get('redactor'):
+            doc.add_paragraph()
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.add_run("Redactor")
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(metadata['redactor'].upper())
+            run.bold = True
+
+        # Salvare
+        process_dir = get_process_dir(process_id)
+        base_filename = metadata.get('video_filename', 'export')
+        if '.' in base_filename:
+            base_filename = base_filename.rsplit('.', 1)[0]
+
+        docx_filename = f"{base_filename}.docx"
+        docx_path = os.path.join(process_dir, docx_filename)
+        doc.save(docx_path)
+
+        return docx_filename
+
+    except Exception as e:
+        print(f"Eroare la generarea DOCX: {e}")
+        traceback.print_exc()
+        return None
 
 
 # Model VAD (Silero)
@@ -2444,6 +2588,42 @@ def cancel_task(process_id):
         else:
             return jsonify({'success': False, 'message': f'Task-ul nu poate fi anulat în starea actuală: {status["status"]}'})
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/export_docx', methods=['POST'])
+def export_docx():
+    """Exportă subtitrările în format DOCX pentru traducători"""
+    try:
+        data = request.get_json()
+        process_id = data.get('process_id')
+        segments = data.get('segments')
+        metadata = {
+            'title': data.get('title'),
+            'series': data.get('series'),
+            'episode': data.get('episode'),
+            'translator': data.get('translator'),
+            'redactor': data.get('redactor'),
+            'max_chars': data.get('max_chars', 38),
+            'use_legacy': data.get('use_legacy', True),
+            'video_filename': data.get('video_filename', 'subtitrare')
+        }
+
+        if not process_id or not segments:
+            return jsonify({'error': 'Date insuficiente pentru export'}), 400
+
+        docx_filename = generate_docx_export(process_id, segments, metadata)
+
+        if docx_filename:
+            return jsonify({
+                'success': True,
+                'docx_filename': docx_filename,
+                'download_url': f'/download/{process_id}/{docx_filename}'
+            })
+        else:
+            return jsonify({'error': 'Eroare la generarea fișierului DOCX'}), 500
+
+    except Exception as e:
+        print(f"Eroare API export DOCX: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/save_edits', methods=['POST'])

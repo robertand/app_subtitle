@@ -1709,6 +1709,59 @@
                 </div>
             </div>
             
+            <!-- Translator Mode -->
+            <div class="settings-card" id="translatorCard">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h3 style="margin: 0;"><i class="fas fa-file-word"></i> Mod Traducător</h3>
+                    <input type="checkbox" id="translatorModeToggle" style="width: 24px; height: 24px;">
+                </div>
+
+                <div id="translatorSettings" style="display: none; flex-direction: column; gap: 15px;">
+                    <div class="language-selector">
+                        <label>Titlu Serial / Film:</label>
+                        <input type="text" id="serialTitle" placeholder="Ex: INIMĂ SĂLBATICĂ"
+                               style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div class="language-selector">
+                            <label>Seria:</label>
+                            <input type="text" id="seriesNumber" placeholder="Ex: 2"
+                                   style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                        </div>
+                        <div class="language-selector">
+                            <label>Episodul:</label>
+                            <input type="text" id="episodeNumber" placeholder="Ex: 3"
+                                   style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                        </div>
+                    </div>
+
+                    <div class="language-selector">
+                        <label>Traducător (Nume Prenume):</label>
+                        <input type="text" id="translatorName" placeholder="Numele tău"
+                               style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                    </div>
+
+                    <div class="language-selector">
+                        <label>Redactor (Nume Prenume):</label>
+                        <input type="text" id="redactorName" placeholder="Nume redactor"
+                               style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                    </div>
+
+                    <div class="control-group">
+                        <label>
+                            <span>Caractere / rând (docx):</span>
+                            <span class="control-value" id="docxMaxCharsValue">38</span>
+                        </label>
+                        <input type="range" id="docxMaxChars" min="30" max="60" step="1" value="38">
+                    </div>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="useLegacyDiacritics" checked>
+                        <label for="useLegacyDiacritics">Folosește diacritice Legacy (ş, ţ)</label>
+                    </div>
+                </div>
+            </div>
 
             <!-- Language & Segmentation -->
             <div class="settings-card">
@@ -1958,6 +2011,9 @@
                 <button class="btn download-btn" onclick="downloadTranslatedSRT()" id="mainDownloadTranslatedBtn" style="display: none; min-width: 220px; background: var(--primary-dark);">
                     <i class="fas fa-language"></i> Descarcă SRT Tradus
                 </button>
+                <button class="btn" onclick="exportToDocx()" id="exportDocxBtn" style="display: none; min-width: 220px; background: #2b5797;">
+                    <i class="fas fa-file-word"></i> Descarcă DOCX
+                </button>
                 <button class="btn btn-secondary" onclick="playWithSubtitles()" id="playWithSubtitlesBtn" style="min-width: 220px;">
                     <i class="fas fa-film"></i> Play cu Subtitrări
                 </button>
@@ -2080,6 +2136,11 @@
         const addTranslationBtn = document.getElementById('addTranslationBtn');
         const showMultipleTranslationsBtn = document.getElementById('showMultipleTranslationsBtn');
         const saveEditsBtn = document.getElementById('saveEditsBtn');
+        const translatorModeToggle = document.getElementById('translatorModeToggle');
+        const translatorSettings = document.getElementById('translatorSettings');
+        const docxMaxChars = document.getElementById('docxMaxChars');
+        const docxMaxCharsValue = document.getElementById('docxMaxCharsValue');
+        const exportDocxBtn = document.getElementById('exportDocxBtn');
         
         // Elemente pentru upload segmentat
         const chunkedUploadProgress = document.getElementById('chunkedUploadProgress');
@@ -2142,6 +2203,17 @@
             // Încarcă limbile pentru traduceri multiple
             loadNewTranslationLanguages();
             
+            // Event listeners pentru Mod Traducător
+            translatorModeToggle.addEventListener('change', function() {
+                translatorSettings.style.display = this.checked ? 'flex' : 'none';
+                if (processId && currentSegments.length > 0) {
+                    exportDocxBtn.style.display = this.checked ? 'inline-flex' : 'none';
+                }
+            });
+
+            docxMaxChars.addEventListener('input', function() {
+                docxMaxCharsValue.textContent = this.value;
+            });
 
             // Event listeners pentru video
             videoPreview.addEventListener('timeupdate', function() {
@@ -3385,7 +3457,59 @@
                 // Arată butonul pentru traduceri multiple
                 showMultipleTranslationsBtn.style.display = 'inline-flex';
 
+                // Arată butonul DOCX dacă suntem în mod traducător
+                if (translatorModeToggle.checked) {
+                    exportDocxBtn.style.display = 'inline-flex';
+                }
             }, 500);
+        }
+
+        // Exportă în format DOCX
+        async function exportToDocx() {
+            if (!processId || !currentSegments.length) {
+                showToast('Nu există date pentru export', 'warning');
+                return;
+            }
+
+            const originalBtnText = exportDocxBtn.innerHTML;
+            exportDocxBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Se generează...';
+            exportDocxBtn.disabled = true;
+
+            const metadata = {
+                process_id: process_id || processId,
+                segments: currentSegments,
+                title: document.getElementById('serialTitle').value,
+                series: document.getElementById('seriesNumber').value,
+                episode: document.getElementById('episodeNumber').value,
+                translator: document.getElementById('translatorName').value,
+                redactor: document.getElementById('redactorName').value,
+                max_chars: docxMaxChars.value,
+                use_legacy: document.getElementById('useLegacyDiacritics').checked,
+                video_filename: selectedFile ? selectedFile.name : 'subtitrare'
+            };
+
+            try {
+                const response = await fetch('/api/export_docx', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(metadata)
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast('Document DOCX generat cu succes!', 'success');
+                    window.open(data.download_url, '_blank');
+                } else {
+                    throw new Error(data.error || 'Eroare la export');
+                }
+            } catch (error) {
+                console.error('Eroare export DOCX:', error);
+                showToast(`Eroare la export: ${error.message}`, 'error');
+            } finally {
+                exportDocxBtn.innerHTML = originalBtnText;
+                exportDocxBtn.disabled = false;
+            }
         }
 
         
@@ -4012,8 +4136,16 @@
             document.getElementById('transcriptionButtons').style.display = 'flex';
             document.getElementById('resultTitle').innerHTML = '<i class="fas fa-check-circle"></i> Transcriere finalizată!';
             mainDownloadTranslatedBtn.style.display = 'none';
+            exportDocxBtn.style.display = 'none';
             showMultipleTranslationsBtn.style.display = 'inline-flex';
             
+            // Reset Translator fields
+            document.getElementById('serialTitle').value = '';
+            document.getElementById('seriesNumber').value = '';
+            document.getElementById('episodeNumber').value = '';
+            document.getElementById('translatorName').value = '';
+            document.getElementById('redactorName').value = '';
+
 
             videoPreview.src = '';
             videoPreview.style.display = 'none';
