@@ -1672,11 +1672,42 @@
 
                 <div class="translation-selector" style="margin-top: 10px;">
                     <label for="translationEngineSelect"><i class="fas fa-microchip"></i> Engine:</label>
-                    <select id="translationEngineSelect">
-                        <option value="transformers">Transformers (Rapid)</option>
-                        <option value="gemma">LLM Gemma 12B (Best)</option>
-                        <option value="mistral">LLM Mistral (Precise)</option>
+                    <select id="translationEngineSelect" onchange="toggleOllamaSettings()">
+                        <optgroup label="Transformers (Local)">
+                            <option value="transformers">MarianMT / NLLB</option>
+                            <option value="gemma-2b">TranslateGemma 2B</option>
+                            <option value="gemma-9b">TranslateGemma 9B</option>
+                            <option value="gemma-27b">TranslateGemma 27B</option>
+                            <option value="gemma">TranslateGemma 12B (it)</option>
+                            <option value="mistral">Mistral 7B</option>
+                        </optgroup>
+                        <optgroup label="Ollama (Local API)">
+                            <option value="ollama-gemma-2b">Ollama: TranslateGemma 2B</option>
+                            <option value="ollama-gemma-9b">Ollama: TranslateGemma 9B</option>
+                            <option value="ollama-gemma-27b">Ollama: TranslateGemma 27B</option>
+                            <option value="ollama-custom">Ollama: Custom Model</option>
+                        </optgroup>
+                        <optgroup label="llama-cpp (GGUF)">
+                            <option value="llama-cpp-gemma-2b">llama-cpp: Gemma 2B</option>
+                            <option value="llama-cpp-gemma-9b">llama-cpp: Gemma 9B</option>
+                            <option value="llama-cpp-gemma-27b">llama-cpp: Gemma 27B</option>
+                        </optgroup>
                     </select>
+                </div>
+
+                <div id="ollamaSettings" class="translation-selector" style="display: none; grid-column: span 2; margin-top: 10px; background: var(--primary-light); padding: 15px; border-radius: var(--radius-md); border: 1px solid var(--primary);">
+                    <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 10px;">
+                        <div style="flex: 1;">
+                            <label><i class="fas fa-link"></i> Ollama URL:</label>
+                            <input type="text" id="ollamaUrl" value="http://localhost:11434" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--border);">
+                        </div>
+                        <div id="ollamaCustomModelDiv" style="flex: 1; display: none;">
+                            <label><i class="fas fa-robot"></i> Model Name:</label>
+                            <input type="text" id="ollamaCustomModel" placeholder="e.g. translategemma:2b" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--border);">
+                        </div>
+                        <button class="btn btn-secondary" onclick="checkOllamaStatus()" style="margin-top: 22px;">Check Status</button>
+                    </div>
+                    <div id="ollamaStatusText" style="font-size: 0.8rem; color: var(--text-muted);"></div>
                 </div>
 
                 <div class="translation-selector" style="grid-column: span 2; margin-top: 10px;">
@@ -1888,10 +1919,26 @@
                         <option value="">-- Alege o limbă nouă --</option>
                         <!-- Languages will be populated by JavaScript -->
                     </select>
-                    <select id="newTranslationEngineSelect" style="max-width: 150px;">
-                        <option value="transformers">Transformers</option>
-                        <option value="gemma">Gemma 12B LLM</option>
-                        <option value="mistral">Mistral LLM</option>
+                    <select id="newTranslationEngineSelect" style="max-width: 150px;" onchange="toggleNewOllamaSettings()">
+                        <optgroup label="Transformers">
+                            <option value="transformers">Standard</option>
+                            <option value="gemma-2b">Gemma 2B</option>
+                            <option value="gemma-9b">Gemma 9B</option>
+                            <option value="gemma-27b">Gemma 27B</option>
+                            <option value="gemma">Gemma 12B</option>
+                            <option value="mistral">Mistral 7B</option>
+                        </optgroup>
+                        <optgroup label="Ollama">
+                            <option value="ollama-gemma-2b">Ollama: Gemma 2B</option>
+                            <option value="ollama-gemma-9b">Ollama: Gemma 9B</option>
+                            <option value="ollama-gemma-27b">Ollama: Gemma 27B</option>
+                            <option value="ollama-custom">Ollama: Custom</option>
+                        </optgroup>
+                        <optgroup label="llama-cpp">
+                            <option value="llama-cpp-gemma-2b">llama-cpp: Gemma 2B</option>
+                            <option value="llama-cpp-gemma-9b">llama-cpp: Gemma 9B</option>
+                            <option value="llama-cpp-gemma-27b">llama-cpp: Gemma 27B</option>
+                        </optgroup>
                     </select>
                     <button class="btn" onclick="addNewTranslation()" id="addTranslationBtn">
                         <i class="fas fa-plus"></i> Adaugă Traducere
@@ -2141,6 +2188,12 @@
         const docxMaxChars = document.getElementById('docxMaxChars');
         const docxMaxCharsValue = document.getElementById('docxMaxCharsValue');
         const exportDocxBtn = document.getElementById('exportDocxBtn');
+        const translationEngineSelect = document.getElementById('translationEngineSelect');
+        const ollamaSettings = document.getElementById('ollamaSettings');
+        const ollamaUrlInput = document.getElementById('ollamaUrl');
+        const ollamaCustomModel = document.getElementById('ollamaCustomModel');
+        const ollamaCustomModelDiv = document.getElementById('ollamaCustomModelDiv');
+        const ollamaStatusText = document.getElementById('ollamaStatusText');
         
         // Elemente pentru upload segmentat
         const chunkedUploadProgress = document.getElementById('chunkedUploadProgress');
@@ -3188,7 +3241,9 @@
                         language: currentLanguage,
                         translation_target: translationTarget || '',
                         translation_engine: document.getElementById('translationEngineSelect').value,
-                    translation_instructions: document.getElementById('translationInstructions').value,
+                        translation_instructions: document.getElementById('translationInstructions').value,
+                        ollama_url: document.getElementById('ollamaUrl').value,
+                        ollama_custom_model: document.getElementById('ollamaCustomModel').value,
                         adjust_segmentation: adjustSegmentationCheckbox.checked,
                         extract_audio_only: extractAudioOnlyCheckbox.checked
                     })
@@ -3802,7 +3857,9 @@
                         target_lang: targetLang,
                         source_lang: langCode,
                         translation_engine: document.getElementById('newTranslationEngineSelect').value,
-                        translation_instructions: document.getElementById('newTranslationInstructions').value
+                        translation_instructions: document.getElementById('newTranslationInstructions').value,
+                        ollama_url: document.getElementById('ollamaUrl').value,
+                        ollama_custom_model: document.getElementById('ollamaCustomModel').value
                     })
                 });
                 
@@ -4171,6 +4228,51 @@
             showToast('Aplicație resetată', 'info');
         }
         
+        function toggleOllamaSettings() {
+            const engine = translationEngineSelect.value;
+            if (engine.startsWith('ollama-')) {
+                ollamaSettings.style.display = 'block';
+                ollamaCustomModelDiv.style.display = engine === 'ollama-custom' ? 'block' : 'none';
+            } else {
+                ollamaSettings.style.display = 'none';
+            }
+        }
+
+        function toggleNewOllamaSettings() {
+            const engine = document.getElementById('newTranslationEngineSelect').value;
+            if (engine.startsWith('ollama-')) {
+                ollamaSettings.style.display = 'block';
+                ollamaCustomModelDiv.style.display = engine === 'ollama-custom' ? 'block' : 'none';
+            } else {
+                // If it's not starting with ollama- in the new select, we check the main select
+                if (!translationEngineSelect.value.startsWith('ollama-')) {
+                    ollamaSettings.style.display = 'none';
+                }
+            }
+        }
+
+        async function checkOllamaStatus() {
+            const url = ollamaUrlInput.value;
+            ollamaStatusText.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking Ollama...';
+            try {
+                const response = await fetch(`/api/ollama_status?url=${encodeURIComponent(url)}`);
+                const data = await response.json();
+                if (data.success) {
+                    let modelsHtml = '<strong>Available models:</strong> ';
+                    if (data.models.length > 0) {
+                        modelsHtml += data.models.map(m => m.name).join(', ');
+                    } else {
+                        modelsHtml += 'No models found.';
+                    }
+                    ollamaStatusText.innerHTML = `<span style="color: var(--success);"><i class="fas fa-check-circle"></i> Connected!</span><br>${modelsHtml}`;
+                } else {
+                    ollamaStatusText.innerHTML = `<span style="color: var(--danger);"><i class="fas fa-times-circle"></i> Error: ${data.error}</span>`;
+                }
+            } catch (error) {
+                ollamaStatusText.innerHTML = `<span style="color: var(--danger);"><i class="fas fa-times-circle"></i> Connection failed.</span>`;
+            }
+        }
+
         function showError(message) {
             errorArea.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${message}`;
             errorArea.style.display = 'block';

@@ -12,6 +12,7 @@ import time
 import psutil
 import uuid
 import torch
+import requests
 import torchaudio
 import numpy as np
 import re
@@ -139,6 +140,18 @@ def wrap_text(text, max_chars=38):
     current_length = 0
 
     for word in words:
+        # Dacă un singur cuvânt depășește limita, îl tăiem (rar în practică)
+        if len(word) > max_chars:
+            if current_line:
+                lines.append(" ".join(current_line))
+                current_line = []
+                current_length = 0
+
+            # Împărțim cuvântul lung în bucăți
+            for i in range(0, len(word), max_chars):
+                lines.append(word[i:i+max_chars])
+            continue
+
         if current_length + len(word) + (1 if current_line else 0) <= max_chars:
             current_line.append(word)
             current_length += len(word) + (1 if current_line else 0)
@@ -341,6 +354,18 @@ TRANSLATION_MODELS_CONFIG = {
             'fr-ro': 'Helsinki-NLP/opus-mt-fr-ro',
         }
     },
+    'gemma-2b': {
+        'name': 'google/translategemma-2b',
+        'display_name': 'TranslateGemma 2B'
+    },
+    'gemma-9b': {
+        'name': 'google/translategemma-9b',
+        'display_name': 'TranslateGemma 9B'
+    },
+    'gemma-27b': {
+        'name': 'google/translategemma-27b',
+        'display_name': 'TranslateGemma 27B'
+    },
     'gemma': {
         'name': 'google/translategemma-12b-it',
         'display_name': 'Gemma 12B (Best)'
@@ -348,6 +373,21 @@ TRANSLATION_MODELS_CONFIG = {
     'mistral': {
         'name': 'mistralai/Mistral-7B-Instruct-v0.3', # This might be too large for typical environment, but added as option
         'display_name': 'Mistral 7B'
+    },
+    'ollama': {
+        'default_url': 'http://localhost:11434',
+        'models': {
+            'gemma-2b': 'translategemma:2b',
+            'gemma-9b': 'translategemma:9b',
+            'gemma-27b': 'translategemma:27b'
+        }
+    },
+    'llama-cpp': {
+        'models': {
+            'gemma-2b': 'models/translategemma-2b.gguf',
+            'gemma-9b': 'models/translategemma-9b.gguf',
+            'gemma-27b': 'models/translategemma-27b.gguf'
+        }
     }
 }
 
@@ -687,8 +727,142 @@ def load_llm_model(engine='gemma'):
             print(f"✗ Eroare la încărcarea LLM {engine}: {str(e)}")
             return None
 
-def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instructions=None):
-    """Traduce texte folosind un model LLM (Qwen/Mistral)"""
+def translate_with_llama_cpp(texts, source_lang, target_lang, model_path, instructions=None):
+    """Traduce texte folosind un model GGUF prin llama-cpp-python"""
+    from llama_cpp import Llama
+
+    source_name = LLM_PROMPT_LANGUAGES.get(source_lang, SUPPORTED_LANGUAGES.get(source_lang, source_lang))
+    target_name = LLM_PROMPT_LANGUAGES.get(target_lang, SUPPORTED_LANGUAGES.get(target_lang, target_lang))
+
+    # Verificăm dacă modelul este deja încărcat
+    model_key = f"llama-cpp-{model_path}"
+
+    global translation_models
+    with translation_lock:
+        if model_key not in translation_models:
+            # Eliberăm VRAM
+            unload_whisper_models()
+            to_remove = [k for k in translation_models.keys() if k != model_key]
+            for k in to_remove:
+                m = translation_models.pop(k)
+                if 'model' in m: del m['model']
+            torch.cuda.empty_cache()
+
+            print(f"Încărcare model llama-cpp: {model_path}...")
+            # Detectăm dacă avem CUDA
+            n_gpu_layers = -1 if torch.cuda.is_available() else 0
+
+            try:
+                llm = Llama(
+                    model_path=model_path,
+                    n_gpu_layers=n_gpu_layers,
+                    n_ctx=1024,
+                    verbose=False
+                )
+                translation_models[model_key] = {'model': llm, 'model_type': 'llama-cpp'}
+            except Exception as e:
+                print(f"Eroare la încărcarea llama-cpp: {e}")
+                return texts
+
+        llm = translation_models[model_key]['model']
+
+    translated_texts = []
+
+    for text in texts:
+        if not text.strip():
+            translated_texts.append(text)
+            continue
+
+        try:
+            # Format oficial TranslateGemma
+            instr_part = f"\nInstructions: {instructions}" if instructions else ""
+            prompt = f"Translate the following text from {source_name} to {target_name}.{instr_part}\n{source_name}: {text}\n{target_name}:"
+
+            output = llm(
+                prompt,
+                max_tokens=256,
+                stop=[f"\n{source_name}:", f"{source_name}:", "<|endoftext|>"],
+                echo=False,
+                temperature=0.0
+            )
+
+            result = output['choices'][0]['text'].strip()
+            # Curățăm rezultatul
+            result = result.split('\n')[0].split(':')[-1].strip()
+            translated_texts.append(result if result else text)
+        except Exception as e:
+            print(f"llama-cpp inference error: {e}")
+            translated_texts.append(text)
+
+    return translated_texts
+
+def translate_with_ollama(texts, source_lang, target_lang, model_name, ollama_url=None, instructions=None):
+    """Traduce texte folosind un model din Ollama"""
+    if not ollama_url:
+        ollama_url = TRANSLATION_MODELS_CONFIG['ollama']['default_url']
+
+    source_name = LLM_PROMPT_LANGUAGES.get(source_lang, SUPPORTED_LANGUAGES.get(source_lang, source_lang))
+    target_name = LLM_PROMPT_LANGUAGES.get(target_lang, SUPPORTED_LANGUAGES.get(target_lang, target_lang))
+
+    translated_texts = []
+
+    for text in texts:
+        if not text.strip():
+            translated_texts.append(text)
+            continue
+
+        try:
+            # Format oficial TranslateGemma
+            instr_part = f"\nInstructions: {instructions}" if instructions else ""
+            prompt = f"Translate the following text from {source_name} to {target_name}.{instr_part}\n{source_name}: {text}\n{target_name}:"
+
+            response = requests.post(
+                f"{ollama_url}/api/generate",
+                json={
+                    "model": model_name,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.0,
+                        "num_predict": 256
+                    }
+                },
+                timeout=60
+            )
+
+            if response.status_code == 200:
+                result = response.json().get('response', '').strip()
+                # Curățăm rezultatul
+                result = result.split('\n')[0].split(':')[-1].strip()
+                translated_texts.append(result if result else text)
+            else:
+                print(f"Ollama error {response.status_code}: {response.text}")
+                translated_texts.append(text)
+        except Exception as e:
+            print(f"Ollama connection error: {e}")
+            translated_texts.append(text)
+
+    return translated_texts
+
+def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instructions=None, ollama_url=None, ollama_custom_model=None):
+    """Traduce texte folosind un model LLM (Gemma/Mistral)"""
+    if engine.startswith('ollama-'):
+        ollama_engine = engine.replace('ollama-', '')
+        if ollama_engine == 'custom' and ollama_custom_model:
+            ollama_model = ollama_custom_model
+        else:
+            ollama_model = TRANSLATION_MODELS_CONFIG['ollama']['models'].get(ollama_engine, ollama_engine)
+        return translate_with_ollama(texts, source_lang, target_lang, ollama_model, ollama_url=ollama_url, instructions=instructions)
+
+    if engine.startswith('llama-cpp-'):
+        llama_engine = engine.replace('llama-cpp-', '')
+        model_path = TRANSLATION_MODELS_CONFIG['llama-cpp']['models'].get(llama_engine)
+        if model_path and os.path.exists(model_path):
+            return translate_with_llama_cpp(texts, source_lang, target_lang, model_path, instructions=instructions)
+        else:
+            print(f"⚠️ llama-cpp model path not found or invalid: {model_path}")
+            return texts
+
     model_data = load_llm_model(engine)
     if not model_data:
         return texts
@@ -838,7 +1012,7 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
                 if any(word in f" {response.lower()} " for word in english_words):
                     is_repetition = True
 
-            if is_repetition and engine == 'gemma':
+            if is_repetition and engine.startswith('gemma'):
                 print(f"Gemma repetition detected for: '{text}'. Retrying with strict prompt...")
                 # Re-încercare cu prompt de urgență
                 strict_prompt = f"Translate the FOLLOWING TEXT into {target_name.upper()}. DO NOT REPEAT THE SOURCE.\nTEXT: {text}\nTRANSLATION:"
@@ -872,7 +1046,7 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
 
     return translated_texts
 
-def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None):
+def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None, ollama_url=None, ollama_custom_model=None):
     """Traduce un batch de segmente păstrând timecode-ul"""
     if not segments or source_lang == target_lang:
         return segments
@@ -886,8 +1060,11 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
         return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine, instructions=instructions)
     
     try:
-        if engine in ['gemma', 'mistral']:
+        if engine in ['gemma', 'gemma-2b', 'gemma-9b', 'gemma-27b', 'mistral']:
             model_data = load_llm_model(engine)
+        elif engine.startswith('ollama-') or engine.startswith('llama-cpp-'):
+            # External/Custom engines handle their own model lifecycle or are handled in translate_with_llm
+            model_data = {'model_type': 'llm'}
         else:
             # Încarcă modelul de traducere standard
             model_data = load_translation_model(source_lang, target_lang)
@@ -909,10 +1086,10 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
             
             try:
                 if model_type == 'llm':
-                    translated_texts = translate_with_llm(batch_texts, source_lang, target_lang, engine=engine, instructions=instructions)
+                    translated_texts = translate_with_llm(batch_texts, source_lang, target_lang, engine=engine, instructions=instructions, ollama_url=ollama_url, ollama_custom_model=ollama_custom_model)
 
                     # Verificăm dacă Gemma a repetat turca (eșec)
-                    if engine == 'gemma' and source_lang == 'tr' and target_lang == 'ro':
+                    if engine.startswith('gemma') and source_lang == 'tr' and target_lang == 'ro':
                         failed_indices = []
                         for j, res in enumerate(translated_texts):
                             # Dacă e identic sau pare turcă, folosim fallback Transformers
@@ -1020,13 +1197,13 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
         print(f"✗ Eroare la traducere: {str(e)}")
         return segments
 
-def translate_segments(segments, source_lang, target_lang, engine='transformers', instructions=None):
+def translate_segments(segments, source_lang, target_lang, engine='transformers', instructions=None, ollama_url=None, ollama_custom_model=None):
     """Traduce toate segmentele păstrând timecode-ul și structura"""
     if not segments or source_lang == target_lang:
         return segments
     
-    # Dacă folosim un LLM, descărcăm modelele Whisper pentru a face loc în VRAM
-    if engine in ['gemma', 'mistral']:
+    # Dacă folosim un LLM local (Transformers), descărcăm modelele Whisper pentru a face loc în VRAM
+    if engine in ['gemma', 'gemma-2b', 'gemma-9b', 'gemma-27b', 'mistral']:
         unload_whisper_models()
 
     print(f"Încep traducerea din {source_lang} în {target_lang} ({engine})...")
@@ -1052,8 +1229,8 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
         if short_segments:
             print(f"Traduc {len(short_segments)} segmente scurte...")
             # Pentru LLM folosim un batch mai mic pentru a evita OOM (Out of Memory)
-            effective_batch_size = 5 if engine in ['gemma', 'mistral'] else 10
-            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=effective_batch_size, engine=engine, instructions=instructions)
+            effective_batch_size = 5 if engine in ['gemma', 'gemma-2b', 'gemma-9b', 'gemma-27b', 'mistral'] or engine.startswith('ollama-') else 10
+            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=effective_batch_size, engine=engine, instructions=instructions, ollama_url=ollama_url, ollama_custom_model=ollama_custom_model)
             translated_segments.extend(translated_short)
         
         # Traduce segmentele lungi individual pentru mai multă precizie
@@ -1062,7 +1239,7 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
             for seg in long_segments:
                 try:
                     # Traduce fiecare segment lung individual
-                    batch_result = translate_segment_batch([seg], source_lang, target_lang, batch_size=1, engine=engine, instructions=instructions)
+                    batch_result = translate_segment_batch([seg], source_lang, target_lang, batch_size=1, engine=engine, instructions=instructions, ollama_url=ollama_url, ollama_custom_model=ollama_custom_model)
                     if batch_result:
                         translated_segments.append(batch_result[0])
                     else:
@@ -1178,7 +1355,10 @@ def get_model_info(model_name):
         'small': '244 MB',
         'medium': '769 MB',
         'large': '1.5 GB',
-        'large-v3': '1.5 GB'
+        'large-v3': '1.5 GB',
+        'gemma-2b': '2 GB',
+        'gemma-9b': '9 GB',
+        'gemma-27b': '27 GB'
     }
     
     model_descriptions = {
@@ -1187,7 +1367,10 @@ def get_model_info(model_name):
         'small': 'Recomandat pentru limba română',
         'medium': 'Calitate foarte bună, mai lent',
         'large': 'Calitate profesională, necesită multă memorie',
-        'large-v3': 'Cel mai recent model, suportă mai multe limbi'
+        'large-v3': 'Cel mai recent model, suportă mai multe limbi',
+        'gemma-2b': 'TranslateGemma 2B (LLM)',
+        'gemma-9b': 'TranslateGemma 9B (LLM)',
+        'gemma-27b': 'TranslateGemma 27B (LLM)'
     }
     
     return {
@@ -2243,6 +2426,22 @@ def process_normal_file(file_path, model, device, language, translation_target,
         'transcribe_time': transcribe_time
     }
 
+@app.route('/api/ollama_status', methods=['GET'])
+def ollama_status():
+    """Verifică statusul Ollama"""
+    ollama_url = request.args.get('url', TRANSLATION_MODELS_CONFIG['ollama']['default_url'])
+    try:
+        response = requests.get(f"{ollama_url}/api/tags", timeout=5)
+        if response.status_code == 200:
+            return jsonify({
+                'success': True,
+                'models': response.json().get('models', [])
+            })
+        else:
+            return jsonify({'success': False, 'error': f'Ollama error {response.status_code}'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 # ============================================================================
 # RUTE FLASK
 # ============================================================================
@@ -2377,7 +2576,7 @@ def chunk_upload_status(session_id):
 
 def background_processing_task(original_path, model_name, language, translation_target,
                              should_adjust_segmentation, process_id, extract_audio_only, original_filename,
-                             translation_engine='transformers', translation_instructions=None):
+                             translation_engine='transformers', translation_instructions=None, ollama_url=None, ollama_custom_model=None):
     """Task de procesare care rulează în background"""
     try:
         update_task_status(process_id, 'processing', 5, 'Inițializare procesare...')
@@ -2431,7 +2630,7 @@ def background_processing_task(original_path, model_name, language, translation_
             update_task_status(process_id, 'processing', 90, f'Traducere în {translation_target} ({translation_engine})...')
             translation_start = time.time()
             try:
-                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions)
+                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions, ollama_url=ollama_url, ollama_custom_model=ollama_custom_model)
                 translation_time = time.time() - translation_start
                 for i, segment in enumerate(translated):
                     translated_segments.append({
@@ -2543,7 +2742,9 @@ def chunk_upload_process(session_id):
             data.get('extract_audio_only', False),
             session_info['file_name'],
             data.get('translation_engine', 'transformers'),
-            data.get('translation_instructions')
+            data.get('translation_instructions'),
+            data.get('ollama_url'),
+            data.get('ollama_custom_model')
         ))
         thread.start()
 
@@ -3033,7 +3234,7 @@ def upload_file():
             translation_start = time.time()
 
             try:
-                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions)
+                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions, ollama_url=request.form.get('ollama_url'), ollama_custom_model=request.form.get('ollama_custom_model'))
                 translation_time = time.time() - translation_start
 
                 for i, segment in enumerate(translated):
@@ -3267,7 +3468,7 @@ def api_translate_segments():
                 'text': seg.get('text', '')
             })
         
-        translated_segments = translate_segments(whisper_segments, source_lang, target_lang, engine=data.get('translation_engine', 'transformers'))
+        translated_segments = translate_segments(whisper_segments, source_lang, target_lang, engine=data.get('translation_engine', 'transformers'), ollama_url=data.get('ollama_url'), ollama_custom_model=data.get('ollama_custom_model'))
         
         formatted_segments = []
         for i, segment in enumerate(translated_segments):
@@ -3325,7 +3526,7 @@ def translate_existing():
                 'text': seg['text']
             })
         
-        translated_segments = translate_segments(whisper_segments, detected_language, target_lang, engine=engine, instructions=instructions)
+        translated_segments = translate_segments(whisper_segments, detected_language, target_lang, engine=engine, instructions=instructions, ollama_url=data.get('ollama_url'), ollama_custom_model=data.get('ollama_custom_model'))
         
         formatted_segments = []
         for i, segment in enumerate(translated_segments):
