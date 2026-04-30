@@ -1673,12 +1673,9 @@
                 <div class="translation-selector" style="margin-top: 10px;">
                     <label for="translationEngineSelect"><i class="fas fa-microchip"></i> Engine:</label>
                     <select id="translationEngineSelect">
-                        <option value="transformers">Standard (MarianMT / NLLB)</option>
-                        <option value="gemma-2b">TranslateGemma 2B</option>
-                        <option value="gemma-9b">TranslateGemma 9B</option>
-                        <option value="gemma-27b">TranslateGemma 27B</option>
-                        <option value="gemma">TranslateGemma 12B (it)</option>
-                        <option value="mistral">Mistral 7B</option>
+                        <option value="transformers">Transformers (Rapid)</option>
+                        <option value="gemma">LLM Gemma 12B (Best)</option>
+                        <option value="mistral">LLM Mistral (Precise)</option>
                     </select>
                 </div>
 
@@ -1891,15 +1888,10 @@
                         <option value="">-- Alege o limbă nouă --</option>
                         <!-- Languages will be populated by JavaScript -->
                     </select>
-                    <select id="newTranslationEngineSelect" style="max-width: 150px;" >
-                        <optgroup label="Transformers">
-                            <option value="transformers">Standard</option>
-                            <option value="gemma-2b">Gemma 2B</option>
-                            <option value="gemma-9b">Gemma 9B</option>
-                            <option value="gemma-27b">Gemma 27B</option>
-                            <option value="gemma">Gemma 12B</option>
-                            <option value="mistral">Mistral 7B</option>
-                        </optgroup>
+                    <select id="newTranslationEngineSelect" style="max-width: 150px;">
+                        <option value="transformers">Transformers</option>
+                        <option value="gemma">Gemma 12B LLM</option>
+                        <option value="mistral">Mistral LLM</option>
                     </select>
                     <button class="btn" onclick="addNewTranslation()" id="addTranslationBtn">
                         <i class="fas fa-plus"></i> Adaugă Traducere
@@ -2149,7 +2141,6 @@
         const docxMaxChars = document.getElementById('docxMaxChars');
         const docxMaxCharsValue = document.getElementById('docxMaxCharsValue');
         const exportDocxBtn = document.getElementById('exportDocxBtn');
-        const translationEngineSelect = document.getElementById('translationEngineSelect');
         
         // Elemente pentru upload segmentat
         const chunkedUploadProgress = document.getElementById('chunkedUploadProgress');
@@ -3197,10 +3188,11 @@
                         language: currentLanguage,
                         translation_target: translationTarget || '',
                         translation_engine: document.getElementById('translationEngineSelect').value,
-                        translation_instructions: document.getElementById('translationInstructions').value,
+                    translation_instructions: document.getElementById('translationInstructions').value,
                         adjust_segmentation: adjustSegmentationCheckbox.checked,
                         extract_audio_only: extractAudioOnlyCheckbox.checked
                     })
+                });
                 
                 const processData = await processResponse.json();
                 
@@ -3810,10 +3802,11 @@
                         target_lang: targetLang,
                         source_lang: langCode,
                         translation_engine: document.getElementById('newTranslationEngineSelect').value,
-                        translation_instructions: document.getElementById('newTranslationInstructions').value,
+                        translation_instructions: document.getElementById('newTranslationInstructions').value
                     })
                 });
                 
+                const data = await response.json();
                 
                 addTranslationBtn.innerHTML = originalBtnText;
                 addTranslationBtn.disabled = false;
@@ -4177,6 +4170,12 @@
             
             showToast('Aplicație resetată', 'info');
         }
+        
+        function showError(message) {
+            errorArea.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${message}`;
+            errorArea.style.display = 'block';
+        }
+        
         function hideError() {
             errorArea.style.display = 'none';
         }
