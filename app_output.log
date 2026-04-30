@@ -1,0 +1,62 @@
+⚠ ATENȚIE: FFmpeg nu este instalat sau nu este în PATH!
+ℹ CUDA nu este disponibil, se va folosi CPU
+✓ Upload maxim: 50.0 GB
+✓ Dimensiune chunk: 10.0 MB
+✓ Timeout procesare: 7200 secunde
+
+⏳ Se încarcă modelul implicit 'small'...
+Se încarcă modelul Whisper: small...
+Folosind device: cpu
+✓ Model small încărcat în 5.4 secunde pe cpu
+✓ Modelul implicit 'small' încărcat în 5.4 secunde
+
+======================================================================
+🎬 Aplicația de Transcriere Audio/Video cu Upload Segmentat
+======================================================================
+
+📊 Modele disponibile: tiny, base, small, medium, large, large-v3
+🌍 Limbi suportate: 30 limbi
+📁 Fișiere mari: Suport până la 50.0 GB
+🔀 Upload segmentat: Chunks de 10.0 MB
+🌐 Port: 5000
+
+👉 Accesează http://localhost:5000 în browser
+======================================================================
+
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.0.2:5000
+[33mPress CTRL+C to quit[0m
+⚠ ATENȚIE: FFmpeg nu este instalat sau nu este în PATH!
+ℹ CUDA nu este disponibil, se va folosi CPU
+✓ Upload maxim: 50.0 GB
+✓ Dimensiune chunk: 10.0 MB
+✓ Timeout procesare: 7200 secunde
+
+⏳ Se încarcă modelul implicit 'small'...
+Se încarcă modelul Whisper: small...
+Folosind device: cpu
+✓ Model small încărcat în 5.6 secunde pe cpu
+✓ Modelul implicit 'small' încărcat în 5.6 secunde
+
+======================================================================
+🎬 Aplicația de Transcriere Audio/Video cu Upload Segmentat
+======================================================================
+
+📊 Modele disponibile: tiny, base, small, medium, large, large-v3
+🌍 Limbi suportate: 30 limbi
+📁 Fișiere mari: Suport până la 50.0 GB
+🔀 Upload segmentat: Chunks de 10.0 MB
+🌐 Port: 5000
+
+👉 Accesează http://localhost:5000 în browser
+======================================================================
+
+ * Serving Flask app 'app'
+ * Debug mode: off
+Address already in use
+Port 5000 is in use by another program. Either identify and stop that program, or start the server with a different port.
+127.0.0.1 - - [30/Apr/2026 16:14:28] "GET / HTTP/1.1" 200 -

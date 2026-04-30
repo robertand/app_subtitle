@@ -373,21 +373,6 @@ TRANSLATION_MODELS_CONFIG = {
     'mistral': {
         'name': 'mistralai/Mistral-7B-Instruct-v0.3', # This might be too large for typical environment, but added as option
         'display_name': 'Mistral 7B'
-    },
-    'ollama': {
-        'default_url': 'http://localhost:11434',
-        'models': {
-            'gemma-2b': 'translategemma:2b',
-            'gemma-9b': 'translategemma:9b',
-            'gemma-27b': 'translategemma:27b'
-        }
-    },
-    'llama-cpp': {
-        'models': {
-            'gemma-2b': 'models/translategemma-2b.gguf',
-            'gemma-9b': 'models/translategemma-9b.gguf',
-            'gemma-27b': 'models/translategemma-27b.gguf'
-        }
     }
 }
 
@@ -727,142 +712,9 @@ def load_llm_model(engine='gemma'):
             print(f"✗ Eroare la încărcarea LLM {engine}: {str(e)}")
             return None
 
-def translate_with_llama_cpp(texts, source_lang, target_lang, model_path, instructions=None):
-    """Traduce texte folosind un model GGUF prin llama-cpp-python"""
-    from llama_cpp import Llama
 
-    source_name = LLM_PROMPT_LANGUAGES.get(source_lang, SUPPORTED_LANGUAGES.get(source_lang, source_lang))
-    target_name = LLM_PROMPT_LANGUAGES.get(target_lang, SUPPORTED_LANGUAGES.get(target_lang, target_lang))
-
-    # Verificăm dacă modelul este deja încărcat
-    model_key = f"llama-cpp-{model_path}"
-
-    global translation_models
-    with translation_lock:
-        if model_key not in translation_models:
-            # Eliberăm VRAM
-            unload_whisper_models()
-            to_remove = [k for k in translation_models.keys() if k != model_key]
-            for k in to_remove:
-                m = translation_models.pop(k)
-                if 'model' in m: del m['model']
-            torch.cuda.empty_cache()
-
-            print(f"Încărcare model llama-cpp: {model_path}...")
-            # Detectăm dacă avem CUDA
-            n_gpu_layers = -1 if torch.cuda.is_available() else 0
-
-            try:
-                llm = Llama(
-                    model_path=model_path,
-                    n_gpu_layers=n_gpu_layers,
-                    n_ctx=1024,
-                    verbose=False
-                )
-                translation_models[model_key] = {'model': llm, 'model_type': 'llama-cpp'}
-            except Exception as e:
-                print(f"Eroare la încărcarea llama-cpp: {e}")
-                return texts
-
-        llm = translation_models[model_key]['model']
-
-    translated_texts = []
-
-    for text in texts:
-        if not text.strip():
-            translated_texts.append(text)
-            continue
-
-        try:
-            # Format oficial TranslateGemma
-            instr_part = f"\nInstructions: {instructions}" if instructions else ""
-            prompt = f"Translate the following text from {source_name} to {target_name}.{instr_part}\n{source_name}: {text}\n{target_name}:"
-
-            output = llm(
-                prompt,
-                max_tokens=256,
-                stop=[f"\n{source_name}:", f"{source_name}:", "<|endoftext|>"],
-                echo=False,
-                temperature=0.0
-            )
-
-            result = output['choices'][0]['text'].strip()
-            # Curățăm rezultatul
-            result = result.split('\n')[0].split(':')[-1].strip()
-            translated_texts.append(result if result else text)
-        except Exception as e:
-            print(f"llama-cpp inference error: {e}")
-            translated_texts.append(text)
-
-    return translated_texts
-
-def translate_with_ollama(texts, source_lang, target_lang, model_name, ollama_url=None, instructions=None):
-    """Traduce texte folosind un model din Ollama"""
-    if not ollama_url:
-        ollama_url = TRANSLATION_MODELS_CONFIG['ollama']['default_url']
-
-    source_name = LLM_PROMPT_LANGUAGES.get(source_lang, SUPPORTED_LANGUAGES.get(source_lang, source_lang))
-    target_name = LLM_PROMPT_LANGUAGES.get(target_lang, SUPPORTED_LANGUAGES.get(target_lang, target_lang))
-
-    translated_texts = []
-
-    for text in texts:
-        if not text.strip():
-            translated_texts.append(text)
-            continue
-
-        try:
-            # Format oficial TranslateGemma
-            instr_part = f"\nInstructions: {instructions}" if instructions else ""
-            prompt = f"Translate the following text from {source_name} to {target_name}.{instr_part}\n{source_name}: {text}\n{target_name}:"
-
-            response = requests.post(
-                f"{ollama_url}/api/generate",
-                json={
-                    "model": model_name,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.0,
-                        "num_predict": 256
-                    }
-                },
-                timeout=60
-            )
-
-            if response.status_code == 200:
-                result = response.json().get('response', '').strip()
-                # Curățăm rezultatul
-                result = result.split('\n')[0].split(':')[-1].strip()
-                translated_texts.append(result if result else text)
-            else:
-                print(f"Ollama error {response.status_code}: {response.text}")
-                translated_texts.append(text)
-        except Exception as e:
-            print(f"Ollama connection error: {e}")
-            translated_texts.append(text)
-
-    return translated_texts
-
-def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instructions=None, ollama_url=None, ollama_custom_model=None):
-    """Traduce texte folosind un model LLM (Gemma/Mistral)"""
-    if engine.startswith('ollama-'):
-        ollama_engine = engine.replace('ollama-', '')
-        if ollama_engine == 'custom' and ollama_custom_model:
-            ollama_model = ollama_custom_model
-        else:
-            ollama_model = TRANSLATION_MODELS_CONFIG['ollama']['models'].get(ollama_engine, ollama_engine)
-        return translate_with_ollama(texts, source_lang, target_lang, ollama_model, ollama_url=ollama_url, instructions=instructions)
-
-    if engine.startswith('llama-cpp-'):
-        llama_engine = engine.replace('llama-cpp-', '')
-        model_path = TRANSLATION_MODELS_CONFIG['llama-cpp']['models'].get(llama_engine)
-        if model_path and os.path.exists(model_path):
-            return translate_with_llama_cpp(texts, source_lang, target_lang, model_path, instructions=instructions)
-        else:
-            print(f"⚠️ llama-cpp model path not found or invalid: {model_path}")
-            return texts
-
+def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instructions=None):
+    """Traduce texte folosind un model LLM (Gemma/Mistral) prin Transformers"""
     model_data = load_llm_model(engine)
     if not model_data:
         return texts
@@ -1046,27 +898,24 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
 
     return translated_texts
 
-def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None, ollama_url=None, ollama_custom_model=None):
+def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None):
     """Traduce un batch de segmente păstrând timecode-ul"""
     if not segments or source_lang == target_lang:
         return segments
 
-    # Bridge special pentru Turcă -> Română în mod Batch (Transformers)
-    if source_lang == 'tr' and target_lang == 'ro' and engine == 'transformers':
-        print("Turkish -> Romanian Batch via bridge...")
-        # Traducem în engleză batch-ul (folosind MarianMT dacă e disponibil)
-        segments_en = translate_segment_batch(segments, 'tr', 'en', batch_size=batch_size, engine=engine, instructions=instructions)
-        # Apoi traducem din engleză în română (folosind MarianMT)
+    # Bridge general pentru Sursă -> Română via Engleză (pentru orice engine care folosește transformers)
+    # Sursa -> EN -> RO este adesea mai stabilă pentru modelele multilingve sau perechi rare
+    if target_lang == 'ro' and source_lang != 'en':
+        print(f"{source_lang} -> Romanian Batch via English bridge ({engine})...")
+        # Traducem în engleză batch-ul
+        segments_en = translate_segment_batch(segments, source_lang, 'en', batch_size=batch_size, engine=engine, instructions=instructions)
+        # Apoi traducem din engleză în română
         return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine, instructions=instructions)
     
     try:
-        if engine in ['gemma', 'gemma-2b', 'gemma-9b', 'gemma-27b', 'mistral']:
+        if engine in ['gemma', 'gemma-27b', 'mistral']:
             model_data = load_llm_model(engine)
-        elif engine.startswith('ollama-') or engine.startswith('llama-cpp-'):
-            # External/Custom engines handle their own model lifecycle or are handled in translate_with_llm
-            model_data = {'model_type': 'llm'}
         else:
-            # Încarcă modelul de traducere standard
             model_data = load_translation_model(source_lang, target_lang)
 
         if not model_data:
@@ -1086,124 +935,56 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
             
             try:
                 if model_type == 'llm':
-                    translated_texts = translate_with_llm(batch_texts, source_lang, target_lang, engine=engine, instructions=instructions, ollama_url=ollama_url, ollama_custom_model=ollama_custom_model)
+                    translated_texts = translate_with_llm(batch_texts, source_lang, target_lang, engine=engine, instructions=instructions)
 
-                    # Verificăm dacă Gemma a repetat turca (eșec)
-                    if engine.startswith('gemma') and source_lang == 'tr' and target_lang == 'ro':
-                        failed_indices = []
-                        for j, res in enumerate(translated_texts):
-                            # Dacă e identic sau pare turcă, folosim fallback Transformers
-                            if res.strip().lower() == batch_texts[j].strip().lower():
-                                failed_indices.append(j)
-
+                    # Verificăm dacă Gemma a repetat sursa (eșec specific TR->RO sau altele)
+                    if engine.startswith('gemma') and source_lang != target_lang:
+                        failed_indices = [j for j, res in enumerate(translated_texts) if res.strip().lower() == batch_texts[j].strip().lower()]
                         if failed_indices:
-                            print(f"Gemma TR->RO failure detected for {len(failed_indices)} segments in batch. Using Batch Transformers fallback...")
-                            # Colectăm textele eșuate pentru a le traduce în batch, mult mai rapid decât translate_text individual
-                            failed_batch = []
-                            for idx in failed_indices:
-                                failed_batch.append({'text': batch_texts[idx]})
-
-                            # Traducem batch-ul de eșecuri folosind bridge-ul optimizat de transformers
-                            fallback_results = translate_segment_batch(failed_batch, 'tr', 'ro', engine='transformers')
-
-                            # Reintroducem rezultatele traduse corect în batch-ul curent
+                            print(f"Gemma repetition failure detected for {len(failed_indices)} segments. Using Batch Transformers fallback...")
+                            failed_batch = [{'text': batch_texts[idx]} for idx in failed_indices]
+                            fallback_results = translate_segment_batch(failed_batch, source_lang, target_lang, engine='transformers')
                             for idx, fb_res in zip(failed_indices, fallback_results):
                                 translated_texts[idx] = fb_res['text']
 
                 elif model_type == 'marian':
-                    # MarianMT/Opus-MT - direct translation
                     inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
                     translated = model.generate(**inputs, max_length=512, num_beams=4, early_stopping=True)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
                     
                 elif model_type == 'nllb':
-                    # NLLB-200 logic robustificat
-                    src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang)
-                    if not src_code: src_code = f"{source_lang}_Latn"
-
-                    tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang)
-                    if not tgt_code: tgt_code = f"{target_lang}_Latn"
-
-                    # Setează explicit limbile în tokenizer (dacă suportă)
+                    src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
+                    tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
                     if hasattr(tokenizer, 'src_lang'): tokenizer.src_lang = src_code
-                    if hasattr(tokenizer, 'tgt_lang'): tokenizer.tgt_lang = tgt_code
-
                     forced_bos_token_id = None
                     try:
-                        if hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
-                            forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
-                        elif hasattr(tokenizer, 'get_lang_id'):
-                            forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
-                    except Exception as e:
-                        print(f"NLLB Lang ID error: {e}")
-
-                    print(f"NLLB Batch: {src_code} -> {tgt_code} (BOS: {forced_bos_token_id})")
-
-                    inputs = tokenizer(
-                        batch_texts,
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=512
-                    ).to(device)
-                    
-                    gen_kwargs = {
-                        "max_length": 512,
-                        "num_beams": 4,
-                        "early_stopping": True,
-                        "forced_bos_token_id": forced_bos_token_id
-                    }
-
-                    translated = model.generate(**inputs, **gen_kwargs)
+                        if hasattr(tokenizer, 'lang_code_to_id'): forced_bos_token_id = tokenizer.lang_code_to_id.get(tgt_code)
+                    except: pass
+                    inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+                    translated = model.generate(**inputs, max_length=512, num_beams=4, early_stopping=True, forced_bos_token_id=forced_bos_token_id)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
-
-                    # Detecție viciu NLLB (ieșire în franceză)
-                    if target_lang == 'ro' and source_lang != 'fr':
-                        failed_indices = []
-                        french_indicators = {' le ', ' la ', ' et ', ' est ', ' dans '}
-                        for idx, t_text in enumerate(translated_texts):
-                            if any(ind in f" {t_text.lower()} " for ind in french_indicators):
-                                failed_indices.append(idx)
-
-                        if failed_indices:
-                            print(f"NLLB artifacts detected for {len(failed_indices)} segments. Retrying via optimized Batch bridge...")
-                            failed_batch = [{'text': batch_texts[idx]} for idx in failed_indices]
-                            fallback_results = translate_segment_batch(failed_batch, source_lang, target_lang, engine='transformers')
-                            for idx, fb_res in zip(failed_indices, fallback_results):
-                                translated_texts[idx] = fb_res['text']
-                
                 else:
-                    # Fallback pentru alte modele
                     translated_texts = batch_texts
-                
-                # Creează segmentele traduse cu timecode-uri originale
+
                 for j, seg in enumerate(batch):
-                    if j < len(translated_texts):
-                        translated_seg = seg.copy()
-                        translated_seg['text'] = translated_texts[j].strip()
-                        translated_segments.append(translated_seg)
-                    else:
-                        # Fallback: păstrează textul original
-                        translated_segments.append(seg)
-                        
+                    translated_seg = seg.copy()
+                    translated_seg['text'] = translated_texts[j].strip() if j < len(translated_texts) else seg['text']
+                    translated_segments.append(translated_seg)
             except Exception as e:
-                print(f"Eroare la traducerea batch-ului {i}: {str(e)}")
-                # În caz de eroare, păstrează segmentele originale
+                print(f"Eroare batch: {e}")
                 translated_segments.extend(batch)
-        
         return translated_segments
-        
     except Exception as e:
-        print(f"✗ Eroare la traducere: {str(e)}")
+        print(f"Eroare generală batch: {e}")
         return segments
 
-def translate_segments(segments, source_lang, target_lang, engine='transformers', instructions=None, ollama_url=None, ollama_custom_model=None):
+def translate_segments(segments, source_lang, target_lang, engine='transformers', instructions=None):
     """Traduce toate segmentele păstrând timecode-ul și structura"""
     if not segments or source_lang == target_lang:
         return segments
     
     # Dacă folosim un LLM local (Transformers), descărcăm modelele Whisper pentru a face loc în VRAM
-    if engine in ['gemma', 'gemma-2b', 'gemma-9b', 'gemma-27b', 'mistral']:
+    if engine in ['gemma', 'gemma-27b', 'mistral']:
         unload_whisper_models()
 
     print(f"Încep traducerea din {source_lang} în {target_lang} ({engine})...")
@@ -1229,8 +1010,8 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
         if short_segments:
             print(f"Traduc {len(short_segments)} segmente scurte...")
             # Pentru LLM folosim un batch mai mic pentru a evita OOM (Out of Memory)
-            effective_batch_size = 5 if engine in ['gemma', 'gemma-2b', 'gemma-9b', 'gemma-27b', 'mistral'] or engine.startswith('ollama-') else 10
-            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=effective_batch_size, engine=engine, instructions=instructions, ollama_url=ollama_url, ollama_custom_model=ollama_custom_model)
+            effective_batch_size = 5 if engine in ['gemma', 'gemma-27b', 'mistral'] else 10
+            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=effective_batch_size, engine=engine, instructions=instructions)
             translated_segments.extend(translated_short)
         
         # Traduce segmentele lungi individual pentru mai multă precizie
@@ -1239,7 +1020,7 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
             for seg in long_segments:
                 try:
                     # Traduce fiecare segment lung individual
-                    batch_result = translate_segment_batch([seg], source_lang, target_lang, batch_size=1, engine=engine, instructions=instructions, ollama_url=ollama_url, ollama_custom_model=ollama_custom_model)
+                    batch_result = translate_segment_batch([seg], source_lang, target_lang, batch_size=1, engine=engine, instructions=instructions)
                     if batch_result:
                         translated_segments.append(batch_result[0])
                     else:
@@ -1267,10 +1048,10 @@ def translate_text(text, source_lang, target_lang):
     
     text = text.strip()
 
-    # Excepție pentru Turcă -> Română (NLLB are probleme, încercăm via Engleză care e mai stabilă)
-    if source_lang == 'tr' and target_lang == 'ro':
-        print("Turkish -> Romanian via English bridge...")
-        text_en = translate_text(text, 'tr', 'en')
+    # Bridge general pentru Sursă -> Română via Engleză (pentru traduceri individuale)
+    if target_lang == 'ro' and source_lang != 'en':
+        print(f"{source_lang} -> Romanian via English bridge...")
+        text_en = translate_text(text, source_lang, 'en')
         return translate_text(text_en, 'en', 'ro')
     
     try:
@@ -2426,21 +2207,6 @@ def process_normal_file(file_path, model, device, language, translation_target,
         'transcribe_time': transcribe_time
     }
 
-@app.route('/api/ollama_status', methods=['GET'])
-def ollama_status():
-    """Verifică statusul Ollama"""
-    ollama_url = request.args.get('url', TRANSLATION_MODELS_CONFIG['ollama']['default_url'])
-    try:
-        response = requests.get(f"{ollama_url}/api/tags", timeout=5)
-        if response.status_code == 200:
-            return jsonify({
-                'success': True,
-                'models': response.json().get('models', [])
-            })
-        else:
-            return jsonify({'success': False, 'error': f'Ollama error {response.status_code}'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
 
 # ============================================================================
 # RUTE FLASK
@@ -2630,7 +2396,7 @@ def background_processing_task(original_path, model_name, language, translation_
             update_task_status(process_id, 'processing', 90, f'Traducere în {translation_target} ({translation_engine})...')
             translation_start = time.time()
             try:
-                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions, ollama_url=ollama_url, ollama_custom_model=ollama_custom_model)
+                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions)
                 translation_time = time.time() - translation_start
                 for i, segment in enumerate(translated):
                     translated_segments.append({
@@ -3234,7 +3000,7 @@ def upload_file():
             translation_start = time.time()
 
             try:
-                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions, ollama_url=request.form.get('ollama_url'), ollama_custom_model=request.form.get('ollama_custom_model'))
+                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions)
                 translation_time = time.time() - translation_start
 
                 for i, segment in enumerate(translated):
@@ -3468,7 +3234,7 @@ def api_translate_segments():
                 'text': seg.get('text', '')
             })
         
-        translated_segments = translate_segments(whisper_segments, source_lang, target_lang, engine=data.get('translation_engine', 'transformers'), ollama_url=data.get('ollama_url'), ollama_custom_model=data.get('ollama_custom_model'))
+        translated_segments = translate_segments(whisper_segments, source_lang, target_lang, engine=data.get('translation_engine', 'transformers'))
         
         formatted_segments = []
         for i, segment in enumerate(translated_segments):
@@ -3526,7 +3292,7 @@ def translate_existing():
                 'text': seg['text']
             })
         
-        translated_segments = translate_segments(whisper_segments, detected_language, target_lang, engine=engine, instructions=instructions, ollama_url=data.get('ollama_url'), ollama_custom_model=data.get('ollama_custom_model'))
+        translated_segments = translate_segments(whisper_segments, detected_language, target_lang, engine=engine, instructions=instructions)
         
         formatted_segments = []
         for i, segment in enumerate(translated_segments):
