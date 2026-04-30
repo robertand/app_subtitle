@@ -832,6 +832,11 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
             # dar limba cerută e alta, încercăm o a doua variantă mai agresivă
             is_repetition = (response.strip().lower() == text.strip().lower())
 
+            # Euristică: script detection pentru repetări în CJK
+            if not is_repetition and target_lang in ['ro', 'en'] and source_lang in ['zh', 'ja', 'ko']:
+                if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', response):
+                    is_repetition = True
+
             # Euristică: dacă textul conține cuvinte englezești comune în output care ar trebui să fie altă limbă
             if not is_repetition and source_lang == 'en' and target_lang != 'en':
                 english_words = {' the ', ' is ', ' and ', ' with ', ' for '}
@@ -840,8 +845,8 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
 
             if is_repetition and engine == 'gemma':
                 print(f"Gemma repetition detected for: '{text}'. Retrying with strict prompt...")
-                # Re-încercare cu prompt de urgență
-                strict_prompt = f"Translate the FOLLOWING TEXT into {target_name.upper()}. DO NOT REPEAT THE SOURCE.\nTEXT: {text}\nTRANSLATION:"
+                # Re-încercare cu prompt de urgență (format adaptat pentru TranslateGemma)
+                strict_prompt = f"Translate the following text from {source_name} to {target_name}. DO NOT REPEAT THE SOURCE.\n{source_name}: {text}\n{target_name}:"
                 try:
                     retry_inputs = tokenizer([strict_prompt], return_tensors="pt").to(device)
                     # Forțăm modelul să nu repete input-ul folosind și mai multă penalizare
@@ -919,25 +924,31 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                 if model_type == 'llm':
                     translated_texts = translate_with_llm(batch_texts, source_lang, target_lang, engine=engine, instructions=instructions)
 
-                    # Verificăm dacă Gemma a repetat turca (eșec)
-                    if engine == 'gemma' and source_lang == 'tr' and target_lang == 'ro':
+                    # Verificăm dacă Gemma a eșuat (repetare sursă)
+                    if engine == 'gemma':
                         failed_indices = []
                         for j, res in enumerate(translated_texts):
-                            # Dacă e identic sau pare turcă, folosim fallback Transformers
+                            is_failed = False
+                            # 1. Verificare identitate (case-insensitive)
                             if res.strip().lower() == batch_texts[j].strip().lower():
+                                is_failed = True
+
+                            # 2. Verificare script rezidual (dacă traducem din CJK în Latin)
+                            if not is_failed and target_lang in ['ro', 'en'] and source_lang in ['zh', 'ja', 'ko']:
+                                # Căutăm caractere CJK în rezultat
+                                if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', res):
+                                    is_failed = True
+
+                            if is_failed:
                                 failed_indices.append(j)
 
                         if failed_indices:
-                            print(f"Gemma TR->RO failure detected for {len(failed_indices)} segments in batch. Using Batch Transformers fallback...")
-                            # Colectăm textele eșuate pentru a le traduce în batch, mult mai rapid decât translate_text individual
-                            failed_batch = []
-                            for idx in failed_indices:
-                                failed_batch.append({'text': batch_texts[idx]})
+                            print(f"Gemma {source_lang}->{target_lang} failure detected for {len(failed_indices)} segments. Using Transformers fallback...")
+                            failed_batch = [{'text': batch_texts[idx]} for idx in failed_indices]
 
-                            # Traducem batch-ul de eșecuri folosind bridge-ul optimizat de transformers
-                            fallback_results = translate_segment_batch(failed_batch, 'tr', 'ro', engine='transformers')
+                            # Traducem batch-ul de eșecuri folosind engine-ul standard (care are bridge-uri stabile)
+                            fallback_results = translate_segment_batch(failed_batch, source_lang, target_lang, engine='transformers')
 
-                            # Reintroducem rezultatele traduse corect în batch-ul curent
                             for idx, fb_res in zip(failed_indices, fallback_results):
                                 translated_texts[idx] = fb_res['text']
 
