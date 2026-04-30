@@ -884,6 +884,14 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
         segments_en = translate_segment_batch(segments, 'tr', 'en', batch_size=batch_size, engine=engine, instructions=instructions)
         # Apoi traducem din engleză în română (folosind MarianMT)
         return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine, instructions=instructions)
+
+    # Bridge special pentru Gemma: orice limbă -> Română via Engleză
+    if engine == 'gemma' and target_lang == 'ro' and source_lang != 'en':
+        print(f"Gemma {source_lang} -> Romanian via English bridge...")
+        # Traducem în engleză batch-ul
+        segments_en = translate_segment_batch(segments, source_lang, 'en', batch_size=batch_size, engine=engine, instructions=instructions)
+        # Apoi traducem din engleză în română
+        return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine, instructions=instructions)
     
     try:
         if engine in ['gemma', 'mistral']:
