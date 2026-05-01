@@ -1,5 +1,6 @@
 import os
 import tempfile
+import requests
 import whisper
 from flask import Flask, render_template, request, jsonify, send_file, session
 from werkzeug.utils import secure_filename
@@ -872,6 +873,49 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
 
     return translated_texts
 
+VLLM_API_URL = "http://localhost:8000/generate"
+
+def translate_batch_with_vllm(texts, source_lang, target_lang='ro'):
+    """Trimite un lot de texte pentru traducere folosind serverul vLLM."""
+    if not texts:
+        return []
+
+    # Construiește promptul pentru fiecare text din lot
+    prompts = []
+    for text in texts:
+        prompt = f"Translate the following text from {source_lang} to {target_lang}:\n\n{text}\n\nTranslation:"
+        prompts.append(prompt)
+
+    # Pregătește cererea pentru serverul vLLM
+    data = {
+        "prompt": prompts,
+        "max_tokens": 1024,
+        "temperature": 0.1,
+        "top_p": 0.95,
+        "repetition_penalty": 1.1,
+        "stop": ["\n\n", "Translation:"]
+    }
+
+    try:
+        response = requests.post(VLLM_API_URL, json=data)
+        response.raise_for_status()
+        results = response.json()
+
+        # Extrage textele traduse din răspuns
+        translated_texts = []
+        for i, output in enumerate(results.get("outputs", [])):
+            translation = output.get("text", "").strip()
+            # Verifică dacă modelul a repetat sursa (eșec)
+            if i < len(texts) and translation.lower() == texts[i].lower():
+                translation = ""
+            translated_texts.append(translation)
+
+        return translated_texts
+
+    except Exception as e:
+        print(f"Eroare API vLLM: {e}")
+        return texts
+
 def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None):
     """Traduce un batch de segmente păstrând timecode-ul"""
     if not segments or source_lang == target_lang:
@@ -1025,13 +1069,34 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
     if not segments or source_lang == target_lang:
         return segments
     
-    # Dacă folosim un LLM, descărcăm modelele Whisper pentru a face loc în VRAM
-    if engine in ['gemma', 'mistral']:
+    # Dacă folosim un LLM sau vLLM, descărcăm modelele Whisper pentru a face loc în VRAM
+    if engine in ['gemma', 'mistral', 'vllm']:
         unload_whisper_models()
 
     print(f"Încep traducerea din {source_lang} în {target_lang} ({engine})...")
     print(f"Număr segmente: {len(segments)}")
     start_time = time.time()
+
+    # Tratare specială pentru vLLM (batch total)
+    if engine == 'vllm':
+        try:
+            texts = [seg['text'] for seg in segments]
+            translated_texts = translate_batch_with_vllm(texts, source_lang, target_lang)
+
+            translated_segments = []
+            for i, seg in enumerate(segments):
+                translated_seg = seg.copy()
+                translated_seg['text'] = translated_texts[i] if i < len(translated_texts) else seg['text']
+                translated_seg['original'] = False
+                translated_seg['target_language'] = target_lang
+                translated_segments.append(translated_seg)
+
+            translation_time = time.time() - start_time
+            print(f"✓ Traducere vLLM completă în {translation_time:.1f} secunde")
+            return translated_segments
+        except Exception as e:
+            print(f"✗ Eroare la traducerea vLLM: {str(e)}")
+            # Fallback la procesarea normală dacă vLLM eșuează
     
     try:
         # Împarte segmentele în grupuri de lungimi similare pentru o traducere mai bună
