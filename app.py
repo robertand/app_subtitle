@@ -873,48 +873,55 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
 
     return translated_texts
 
-VLLM_API_URL = "http://localhost:8000/generate"
+VLLM_API_URL = "http://localhost:8000/v1/chat/completions"
 
 def translate_batch_with_vllm(texts, source_lang, target_lang='ro'):
-    """Trimite un lot de texte pentru traducere folosind serverul vLLM."""
+    """Trimite texte pentru traducere folosind API-ul OpenAI compatibil al vLLM."""
     if not texts:
         return []
 
-    # Construiește promptul pentru fiecare text din lot
-    prompts = []
-    for text in texts:
-        prompt = f"Translate the following text from {source_lang} to {target_lang}:\n\n{text}\n\nTranslation:"
-        prompts.append(prompt)
+    source_name = LLM_PROMPT_LANGUAGES.get(source_lang, source_lang)
+    target_name = LLM_PROMPT_LANGUAGES.get(target_lang, target_lang)
 
-    # Pregătește cererea pentru serverul vLLM
-    data = {
-        "prompt": prompts,
-        "max_tokens": 1024,
-        "temperature": 0.1,
-        "top_p": 0.95,
-        "repetition_penalty": 1.1,
-        "stop": ["\n\n", "Translation:"]
-    }
+    translated_texts = []
 
-    try:
-        response = requests.post(VLLM_API_URL, json=data)
-        response.raise_for_status()
-        results = response.json()
+    # Procesăm în bucăți mai mici pentru a evita timeout-uri sau payload-uri gigantice
+    batch_size = 50
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i+batch_size]
 
-        # Extrage textele traduse din răspuns
-        translated_texts = []
-        for i, output in enumerate(results.get("outputs", [])):
-            translation = output.get("text", "").strip()
-            # Verifică dacă modelul a repetat sursa (eșec)
-            if i < len(texts) and translation.lower() == texts[i].lower():
-                translation = ""
-            translated_texts.append(translation)
+        # vLLM serve (OpenAI compatible) handles one request at a time with choices,
+        # but to keep it simple and robust, we'll iterate or use the chat API
+        for text in batch:
+            data = {
+                "model": "pytorch/gemma-3-12b-it-QAT-INT4", # or whatever model is loaded
+                "messages": [
+                    {"role": "system", "content": f"You are a professional subtitle translator. Translate from {source_name} to {target_name}. Output ONLY the translation."},
+                    {"role": "user", "content": text}
+                ],
+                "temperature": 0.1,
+                "max_tokens": 512
+            }
 
-        return translated_texts
+            try:
+                response = requests.post(VLLM_API_URL, json=data, timeout=30)
+                response.raise_for_status()
+                result = response.json()
+                translation = result['choices'][0]['message']['content'].strip()
 
-    except Exception as e:
-        print(f"Eroare API vLLM: {e}")
-        return texts
+                # Curățăm eventualele prefixe
+                if translation.startswith(f"{target_name}:"):
+                    translation = translation.replace(f"{target_name}:", "").strip()
+
+                if translation.lower() == text.lower():
+                    translation = ""
+
+                translated_texts.append(translation)
+            except Exception as e:
+                print(f"Eroare vLLM la segmentul {i}: {e}")
+                translated_texts.append(text)
+
+    return translated_texts
 
 def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None):
     """Traduce un batch de segmente păstrând timecode-ul"""
