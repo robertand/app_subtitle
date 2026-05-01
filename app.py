@@ -1,6 +1,9 @@
 import os
+import sys
 import tempfile
 import whisper
+import requests
+import atexit
 from flask import Flask, render_template, request, jsonify, send_file, session
 from werkzeug.utils import secure_filename
 import json
@@ -36,6 +39,22 @@ except ImportError:
 # Configurare director de date local
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
+
+def check_and_install_dependencies():
+    """Instalează automat dependențele necesare pentru vLLM"""
+    required = ["vllm", "transformers", "torch", "huggingface_hub", "requests", "psutil"]
+    try:
+        installed = [pkg.split('==')[0].lower() for pkg in subprocess.check_output([sys.executable, '-m', 'pip', 'freeze']).decode().split()]
+        missing = [pkg for pkg in required if pkg.lower() not in installed]
+        if missing:
+            print(f"📦 Se instalează dependențele lipsă: {', '.join(missing)}...")
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install'] + missing)
+            print("✅ Dependențe instalate cu succes!")
+    except Exception as e:
+        print(f"❌ Eroare la instalarea dependențelor: {e}")
+
+# Instalează la pornire
+check_and_install_dependencies()
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 * 1024  # 50GB max
@@ -107,6 +126,12 @@ upload_lock = threading.Lock()
 # Managementul task-urilor în background
 processing_tasks = {}
 tasks_lock = threading.Lock()
+
+# vLLM Global Management
+vllm_process = None
+vllm_current_model = None
+vllm_lock = threading.Lock()
+hf_token = None
 
 def convert_to_romanian_legacy(text):
     """
@@ -344,6 +369,10 @@ TRANSLATION_MODELS_CONFIG = {
     'gemma': {
         'name': 'google/translategemma-12b-it',
         'display_name': 'Gemma 12B (Best)'
+    },
+    'gemma2': {
+        'name': 'google/gemma-2-12b-it',
+        'display_name': 'Gemma 2 12B (vLLM)'
     },
     'mistral': {
         'name': 'mistralai/Mistral-7B-Instruct-v0.3', # This might be too large for typical environment, but added as option
@@ -687,8 +716,142 @@ def load_llm_model(engine='gemma'):
             print(f"✗ Eroare la încărcarea LLM {engine}: {str(e)}")
             return None
 
+def stop_vllm():
+    """Oprește procesul vLLM dacă rulează"""
+    global vllm_process
+    with vllm_lock:
+        if vllm_process:
+            print("🛑 Oprire serviciu vLLM...")
+            try:
+                # Încercăm oprire elegantă
+                import psutil
+                parent = psutil.Process(vllm_process.pid)
+                for child in parent.children(recursive=True):
+                    child.terminate()
+                parent.terminate()
+
+                # Așteptăm puțin
+                gone, alive = psutil.wait_procs([parent], timeout=5)
+                for p in alive:
+                    p.kill()
+
+                vllm_process = None
+                print("✅ vLLM a fost oprit.")
+            except Exception as e:
+                print(f"⚠️ Eroare la oprirea vLLM: {e}")
+                vllm_process = None
+
+def start_vllm(model_name="google/gemma-2-12b-it"):
+    """Pornește serviciul vLLM ca proces separat"""
+    global vllm_process, hf_token, vllm_current_model
+
+    stop_vllm()
+
+    with vllm_lock:
+        print(f"🚀 Pornire vLLM pentru modelul: {model_name}...")
+
+        env = os.environ.copy()
+        if hf_token:
+            env["HF_TOKEN"] = hf_token
+
+        # Comanda pentru vLLM OpenAI server
+        cmd = [
+            sys.executable, "-m", "vllm.entrypoints.openai.api_server",
+            "--model", model_name,
+            "--port", "8000",
+            "--gpu-memory-utilization", "0.9",
+            "--max-model-len", "4096"
+        ]
+
+        try:
+            # Pornim procesul în background
+            vllm_process = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
+            )
+
+            # Verificăm dacă pornește (wait for "Uvicorn running")
+            start_time = time.time()
+            success = False
+
+            while time.time() - start_time < 300: # 5 min timeout for loading large model
+                line = vllm_process.stdout.readline()
+                if not line: break
+                print(f"[vLLM] {line.strip()}")
+                if "Uvicorn running on http://0.0.0.0:8000" in line:
+                    success = True
+                    vllm_current_model = model_name
+                    break
+                if "Error" in line or "Exception" in line:
+                    print(f"❌ vLLM error detected: {line}")
+                    break
+
+            if success:
+                print("✅ vLLM este gata!")
+                return True
+            else:
+                print("❌ vLLM nu a putut porni în timpul alocat.")
+                stop_vllm()
+                return False
+
+        except Exception as e:
+            print(f"❌ Eroare la pornirea vLLM: {e}")
+            return False
+
+# Înregistrăm oprirea la ieșirea din aplicație
+atexit.register(stop_vllm)
+
+def translate_with_vllm(texts, source_lang, target_lang, instructions=None):
+    """Traduce folosind API-ul vLLM local"""
+    global vllm_current_model
+    source_name = LLM_PROMPT_LANGUAGES.get(source_lang, SUPPORTED_LANGUAGES.get(source_lang, source_lang))
+    target_name = LLM_PROMPT_LANGUAGES.get(target_lang, SUPPORTED_LANGUAGES.get(target_lang, target_lang))
+
+    translated_texts = []
+    url = "http://localhost:8000/v1/chat/completions"
+
+    for text in texts:
+        if not text.strip():
+            translated_texts.append(text)
+            continue
+
+        try:
+            instr_part = f" Additional instructions: {instructions}" if instructions else ""
+            prompt = f"Translate the following text from {source_name} to {target_name}. Output ONLY the translation.{instr_part}\n{source_name}: {text}\n{target_name}:"
+
+            payload = {
+                "model": vllm_current_model or "google/gemma-2-12b-it",
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0,
+                "max_tokens": 512
+            }
+
+            response = requests.post(url, json=payload, timeout=60)
+            result = response.json()
+
+            translated = result['choices'][0]['message']['content'].strip()
+            # Post-processing minimal
+            translated = translated.split(f"{target_name}:")[-1].strip()
+            translated_texts.append(translated)
+
+        except Exception as e:
+            print(f"⚠️ vLLM request error: {e}")
+            translated_texts.append(text)
+
+    return translated_texts
+
 def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instructions=None):
-    """Traduce texte folosind un model LLM (Qwen/Mistral)"""
+    """Traduce texte folosind un model LLM (Gemma/Mistral/vLLM)"""
+    # Dacă folosim vLLM ca engine, direcționăm către funcția dedicată
+    if engine == 'vllm' or engine == 'gemma2':
+        return translate_with_vllm(texts, source_lang, target_lang, instructions=instructions)
+
     model_data = load_llm_model(engine)
     if not model_data:
         return texts
@@ -832,6 +995,11 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
             # dar limba cerută e alta, încercăm o a doua variantă mai agresivă
             is_repetition = (response.strip().lower() == text.strip().lower())
 
+            # Euristică: script detection pentru repetări în CJK
+            if not is_repetition and target_lang in ['ro', 'en'] and source_lang in ['zh', 'ja', 'ko']:
+                if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', response):
+                    is_repetition = True
+
             # Euristică: dacă textul conține cuvinte englezești comune în output care ar trebui să fie altă limbă
             if not is_repetition and source_lang == 'en' and target_lang != 'en':
                 english_words = {' the ', ' is ', ' and ', ' with ', ' for '}
@@ -840,8 +1008,8 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
 
             if is_repetition and engine == 'gemma':
                 print(f"Gemma repetition detected for: '{text}'. Retrying with strict prompt...")
-                # Re-încercare cu prompt de urgență
-                strict_prompt = f"Translate the FOLLOWING TEXT into {target_name.upper()}. DO NOT REPEAT THE SOURCE.\nTEXT: {text}\nTRANSLATION:"
+                # Re-încercare cu prompt de urgență (format adaptat pentru TranslateGemma)
+                strict_prompt = f"Translate the following text from {source_name} to {target_name}. DO NOT REPEAT THE SOURCE.\n{source_name}: {text}\n{target_name}:"
                 try:
                     retry_inputs = tokenizer([strict_prompt], return_tensors="pt").to(device)
                     # Forțăm modelul să nu repete input-ul folosind și mai multă penalizare
@@ -884,9 +1052,26 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
         segments_en = translate_segment_batch(segments, 'tr', 'en', batch_size=batch_size, engine=engine, instructions=instructions)
         # Apoi traducem din engleză în română (folosind MarianMT)
         return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine, instructions=instructions)
+
+    # Bridge special pentru Gemma/vLLM: orice limbă -> Română via Engleză
+    if engine in ['gemma', 'gemma2', 'vllm'] and target_lang == 'ro' and source_lang != 'en':
+        print(f"{engine} {source_lang} -> Romanian via English bridge...")
+        # Traducem în engleză batch-ul
+        segments_en = translate_segment_batch(segments, source_lang, 'en', batch_size=batch_size, engine=engine, instructions=instructions)
+        # Apoi traducem din engleză în română
+        return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine, instructions=instructions)
     
     try:
-        if engine in ['gemma', 'mistral']:
+        if engine == 'vllm' or engine == 'gemma2':
+            # vLLM is handled differently, it doesn't need "loading" into memory here
+            # because it runs as a separate service
+            model_data = {
+                'model': None,
+                'tokenizer': None,
+                'device': 'remote',
+                'model_type': 'llm'
+            }
+        elif engine in ['gemma', 'mistral']:
             model_data = load_llm_model(engine)
         else:
             # Încarcă modelul de traducere standard
@@ -911,25 +1096,31 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                 if model_type == 'llm':
                     translated_texts = translate_with_llm(batch_texts, source_lang, target_lang, engine=engine, instructions=instructions)
 
-                    # Verificăm dacă Gemma a repetat turca (eșec)
-                    if engine == 'gemma' and source_lang == 'tr' and target_lang == 'ro':
+                    # Verificăm dacă Gemma/vLLM a eșuat (repetare sursă)
+                    if engine in ['gemma', 'gemma2', 'vllm']:
                         failed_indices = []
                         for j, res in enumerate(translated_texts):
-                            # Dacă e identic sau pare turcă, folosim fallback Transformers
+                            is_failed = False
+                            # 1. Verificare identitate (case-insensitive)
                             if res.strip().lower() == batch_texts[j].strip().lower():
+                                is_failed = True
+
+                            # 2. Verificare script rezidual (dacă traducem din CJK în Latin)
+                            if not is_failed and target_lang in ['ro', 'en'] and source_lang in ['zh', 'ja', 'ko']:
+                                # Căutăm caractere CJK în rezultat
+                                if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', res):
+                                    is_failed = True
+
+                            if is_failed:
                                 failed_indices.append(j)
 
                         if failed_indices:
-                            print(f"Gemma TR->RO failure detected for {len(failed_indices)} segments in batch. Using Batch Transformers fallback...")
-                            # Colectăm textele eșuate pentru a le traduce în batch, mult mai rapid decât translate_text individual
-                            failed_batch = []
-                            for idx in failed_indices:
-                                failed_batch.append({'text': batch_texts[idx]})
+                            print(f"Gemma {source_lang}->{target_lang} failure detected for {len(failed_indices)} segments. Using Transformers fallback...")
+                            failed_batch = [{'text': batch_texts[idx]} for idx in failed_indices]
 
-                            # Traducem batch-ul de eșecuri folosind bridge-ul optimizat de transformers
-                            fallback_results = translate_segment_batch(failed_batch, 'tr', 'ro', engine='transformers')
+                            # Traducem batch-ul de eșecuri folosind engine-ul standard (care are bridge-uri stabile)
+                            fallback_results = translate_segment_batch(failed_batch, source_lang, target_lang, engine='transformers')
 
-                            # Reintroducem rezultatele traduse corect în batch-ul curent
                             for idx, fb_res in zip(failed_indices, fallback_results):
                                 translated_texts[idx] = fb_res['text']
 
@@ -1026,7 +1217,7 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
         return segments
     
     # Dacă folosim un LLM, descărcăm modelele Whisper pentru a face loc în VRAM
-    if engine in ['gemma', 'mistral']:
+    if engine in ['gemma', 'mistral', 'vllm', 'gemma2']:
         unload_whisper_models()
 
     print(f"Încep traducerea din {source_lang} în {target_lang} ({engine})...")
@@ -1052,7 +1243,12 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
         if short_segments:
             print(f"Traduc {len(short_segments)} segmente scurte...")
             # Pentru LLM folosim un batch mai mic pentru a evita OOM (Out of Memory)
-            effective_batch_size = 5 if engine in ['gemma', 'mistral'] else 10
+            # Pentru vLLM putem folosi un batch mai mare deoarece e optimizat
+            if engine in ['vllm', 'gemma2']:
+                effective_batch_size = 20
+            else:
+                effective_batch_size = 5 if engine in ['gemma', 'mistral'] else 10
+
             translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=effective_batch_size, engine=engine, instructions=instructions)
             translated_segments.extend(translated_short)
         
@@ -2625,6 +2821,83 @@ def export_docx():
     except Exception as e:
         print(f"Eroare API export DOCX: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/save_hf_token', methods=['POST'])
+def save_hf_token():
+    """Salvează token-ul Hugging Face și se loghează"""
+    global hf_token
+    try:
+        data = request.get_json()
+        token = data.get('token')
+        if not token:
+            return jsonify({'error': 'Token lipsă'}), 400
+
+        hf_token = token
+
+        # Încercăm login
+        try:
+            from huggingface_hub import login
+            login(token=token)
+            return jsonify({'success': True, 'message': 'Hugging Face login reușit!'})
+        except Exception as e:
+            return jsonify({'error': f'Eroare login HF: {e}'}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/vllm/start', methods=['POST'])
+def api_vllm_start():
+    """Pornește serviciul vLLM"""
+    try:
+        data = request.get_json()
+        model_name = data.get('model', "google/gemma-2-12b-it")
+
+        # Pornim într-un thread separat deoarece start_vllm este blocant (așteaptă pornirea)
+        def start_task():
+            start_vllm(model_name)
+
+        thread = threading.Thread(target=start_task)
+        thread.start()
+
+        return jsonify({'success': True, 'message': 'Pornire vLLM inițiată...'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/vllm/stop', methods=['POST'])
+def api_vllm_stop():
+    """Oprește serviciul vLLM"""
+    try:
+        stop_vllm()
+        return jsonify({'success': True, 'message': 'vLLM oprit.'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/vllm/status')
+def api_vllm_status():
+    """Verifică statusul serviciului vLLM"""
+    global vllm_process
+    status = "stopped"
+    if vllm_process:
+        if vllm_process.poll() is None:
+            status = "running"
+        else:
+            status = "error"
+
+    # Verificăm dacă endpoint-ul răspunde
+    is_ready = False
+    if status == "running":
+        try:
+            resp = requests.get("http://localhost:8000/v1/models", timeout=2)
+            if resp.status_code == 200:
+                is_ready = True
+        except:
+            pass
+
+    return jsonify({
+        'status': status,
+        'is_ready': is_ready,
+        'hf_token_set': hf_token is not None
+    })
 
 @app.route('/api/save_edits', methods=['POST'])
 def save_edits():
