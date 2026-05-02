@@ -873,53 +873,97 @@ def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instruct
 
     return translated_texts
 
-VLLM_API_URL = "http://localhost:8000/v1/chat/completions"
+VLLM_API_URL = "http://localhost:8000/generate"
 
 def translate_batch_with_vllm(texts, source_lang, target_lang='ro'):
-    """Trimite texte pentru traducere folosind API-ul OpenAI compatibil al vLLM."""
+    """Trimite un lot de texte pentru traducere folosind serverul vLLM."""
     if not texts:
         return []
 
     source_name = LLM_PROMPT_LANGUAGES.get(source_lang, source_lang)
     target_name = LLM_PROMPT_LANGUAGES.get(target_lang, target_lang)
 
+    # Prompt îmbunătățit pentru a evita repetarea sursei
+    prompts = []
+    for text in texts:
+        prompt = (
+            f"<bos><start_of_turn>user\n"
+            f"You are a professional translator. Translate the following text from {source_name} to {target_name}.\n"
+            f"Rules:\n"
+            f"1. Output ONLY the translated text.\n"
+            f"2. DO NOT repeat the source text.\n"
+            f"3. DO NOT add any explanations.\n\n"
+            f"Source ({source_name}): {text}<end_of_turn>\n"
+            f"<start_of_turn>model\n"
+            f"Translation ({target_name}):"
+        )
+        prompts.append(prompt)
+
     translated_texts = []
 
-    # Procesăm în bucăți mai mici pentru a evita timeout-uri sau payload-uri gigantice
+    # Batch-uri de 50 pentru siguranță
     batch_size = 50
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i+batch_size]
+    for i in range(0, len(prompts), batch_size):
+        chunk = prompts[i:i + batch_size]
+        original_chunk_texts = texts[i:i + batch_size]
 
-        # vLLM serve (OpenAI compatible) handles one request at a time with choices,
-        # but to keep it simple and robust, we'll iterate or use the chat API
-        for text in batch:
-            data = {
-                "model": "pytorch/gemma-3-12b-it-QAT-INT4", # or whatever model is loaded
-                "messages": [
-                    {"role": "system", "content": f"You are a professional subtitle translator. Translate from {source_name} to {target_name}. Output ONLY the translation."},
-                    {"role": "user", "content": text}
-                ],
-                "temperature": 0.1,
-                "max_tokens": 512
-            }
+        data = {
+            "prompt": chunk,
+            "max_tokens": 256,
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "repetition_penalty": 1.1,
+            "stop": ["<end_of_turn>", "\n", "Source (", "Translation ("]
+        }
 
-            try:
-                response = requests.post(VLLM_API_URL, json=data, timeout=30)
-                response.raise_for_status()
-                result = response.json()
-                translation = result['choices'][0]['message']['content'].strip()
+        try:
+            print(f"📡 Request vLLM Batch: {len(chunk)} segmente...")
+            response = requests.post(VLLM_API_URL, json=data, timeout=60)
+            response.raise_for_status()
+            results = response.json()
 
-                # Curățăm eventualele prefixe
-                if translation.startswith(f"{target_name}:"):
-                    translation = translation.replace(f"{target_name}:", "").strip()
+            # vLLM returns a list of results when given a list of prompts
+            # or a single object with an 'outputs' list
+            outputs = []
+            if isinstance(results, list):
+                outputs = results
+            elif "outputs" in results:
+                outputs = results["outputs"]
+            elif "choices" in results:
+                outputs = results["choices"]
 
-                if translation.lower() == text.lower():
-                    translation = ""
+            for j, output in enumerate(outputs):
+                # Extract text based on possible response formats
+                translation = ""
+                if isinstance(output, dict):
+                    if "text" in output:
+                        translation = output["text"]
+                        if isinstance(translation, list): translation = translation[0]
+                    elif "message" in output:
+                        translation = output["message"].get("content", "")
+                elif isinstance(output, str):
+                    translation = output
+
+                translation = translation.strip()
+
+                # Curățăm eticheta limbii dacă modelul a inclus-o
+                if translation.startswith(f"Translation ({target_name}):"):
+                    translation = translation.replace(f"Translation ({target_name}):", "").strip()
+                # Eliminăm doar prefixele de limbă exacte (ex: "Romanian: ...")
+                # pentru a evita ștergerea numelor de personaje (ex: "John: Bună")
+                elif translation.lower().startswith(f"{target_name.lower()}:"):
+                    translation = translation[len(target_name)+1:].strip()
+
+                # Verificare repetiție
+                if translation.lower() == original_chunk_texts[j].lower() or not translation:
+                    print(f"⚠️ Repetiție sau gol detectat la segmentul {i+j}. Folosesc Transformers fallback via empty string.")
+                    translation = "" # This will trigger downstream fallback logic if available
 
                 translated_texts.append(translation)
-            except Exception as e:
-                print(f"Eroare vLLM la segmentul {i}: {e}")
-                translated_texts.append(text)
+
+        except Exception as e:
+            print(f"❌ Eroare vLLM Batch {i}: {e}")
+            translated_texts.extend(original_chunk_texts)
 
     return translated_texts
 
@@ -1091,19 +1135,38 @@ def translate_segments(segments, source_lang, target_lang, engine='transformers'
             translated_texts = translate_batch_with_vllm(texts, source_lang, target_lang)
 
             translated_segments = []
+            failed_indices = []
+
             for i, seg in enumerate(segments):
-                translated_seg = seg.copy()
-                translated_seg['text'] = translated_texts[i] if i < len(translated_texts) else seg['text']
-                translated_seg['original'] = False
-                translated_seg['target_language'] = target_lang
+                translated_text = translated_texts[i] if i < len(translated_texts) else ""
+
+                # Dacă traducerea a eșuat (repetat sursa sau gol), marcăm pentru fallback
+                if not translated_text or translated_text.lower() == seg['text'].lower():
+                    failed_indices.append(i)
+                    translated_seg = seg.copy()
+                else:
+                    translated_seg = seg.copy()
+                    translated_seg['text'] = translated_text
+                    translated_seg['original'] = False
+                    translated_seg['target_language'] = target_lang
+
                 translated_segments.append(translated_seg)
 
+            # Fallback pentru segmentele eșuate folosind motorul Transformers
+            if failed_indices:
+                print(f"⚠️ vLLM a eșuat pentru {len(failed_indices)} segmente. Folosesc Transformers fallback...")
+                failed_segments = [segments[idx] for idx in failed_indices]
+                fallback_results = translate_segments(failed_segments, source_lang, target_lang, engine='transformers')
+
+                for idx, fallback_seg in zip(failed_indices, fallback_results):
+                    translated_segments[idx] = fallback_seg
+
             translation_time = time.time() - start_time
-            print(f"✓ Traducere vLLM completă în {translation_time:.1f} secunde")
+            print(f"✓ Traducere vLLM completă în {translation_time:.1f} secunde (cu {len(failed_indices)} fallback-uri)")
             return translated_segments
         except Exception as e:
-            print(f"✗ Eroare la traducerea vLLM: {str(e)}")
-            # Fallback la procesarea normală dacă vLLM eșuează
+            print(f"✗ Eroare critică la traducerea vLLM: {str(e)}")
+            # Fallback la procesarea normală dacă vLLM eșuează complet
     
     try:
         # Împarte segmentele în grupuri de lungimi similare pentru o traducere mai bună
