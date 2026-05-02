@@ -967,18 +967,21 @@ def translate_batch_with_vllm(texts, source_lang, target_lang='ro'):
 
     return translated_texts
 
-def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None):
+def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None, is_fallback=False):
     """Traduce un batch de segmente păstrând timecode-ul"""
     if not segments or source_lang == target_lang:
         return segments
 
-    # Bridge special pentru Turcă -> Română în mod Batch (Transformers)
-    if source_lang == 'tr' and target_lang == 'ro' and engine == 'transformers':
-        print("Turkish -> Romanian Batch via bridge...")
-        # Traducem în engleză batch-ul (folosind MarianMT dacă e disponibil)
-        segments_en = translate_segment_batch(segments, 'tr', 'en', batch_size=batch_size, engine=engine, instructions=instructions)
-        # Apoi traducem din engleză în română (folosind MarianMT)
-        return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine, instructions=instructions)
+    # Bridge special pentru limbi asiatice/orientale -> Română în mod Batch (Transformers)
+    # NLLB are tendința de a traduce în franceză sau spaniolă pentru aceste perechi.
+    # Folosim engleza ca punte (Source -> EN -> RO)
+    bridged_languages = {'tr', 'ko', 'ja', 'zh', 'ar', 'hi', 'he', 'fa'}
+    if source_lang in bridged_languages and target_lang == 'ro' and engine == 'transformers' and not is_fallback:
+        print(f"{source_lang.upper()} -> Romanian Batch via EN bridge...")
+        # Traducem în engleză batch-ul
+        segments_en = translate_segment_batch(segments, source_lang, 'en', batch_size=batch_size, engine=engine, instructions=instructions, is_fallback=True)
+        # Apoi traducem din engleză în română
+        return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine, instructions=instructions, is_fallback=True)
     
     try:
         if engine in ['gemma', 'mistral']:
@@ -1083,10 +1086,10 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, en
                             if any(ind in f" {t_text.lower()} " for ind in french_indicators):
                                 failed_indices.append(idx)
 
-                        if failed_indices:
+                        if failed_indices and not is_fallback:
                             print(f"NLLB artifacts detected for {len(failed_indices)} segments. Retrying via optimized Batch bridge...")
                             failed_batch = [{'text': batch_texts[idx]} for idx in failed_indices]
-                            fallback_results = translate_segment_batch(failed_batch, source_lang, target_lang, engine='transformers')
+                            fallback_results = translate_segment_batch(failed_batch, source_lang, target_lang, engine='transformers', is_fallback=True)
                             for idx, fb_res in zip(failed_indices, fallback_results):
                                 translated_texts[idx] = fb_res['text']
                 
