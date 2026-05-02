@@ -2030,6 +2030,7 @@
     
     <script>
         // Variabile globale
+        let floatingProcessBtn = null;
         let selectedFile = null;
         let srtFilename = '';
         let translatedSrtFilename = '';
@@ -2057,6 +2058,58 @@
         let multipleTranslations = {};
         let currentTranslationLang = null;
         
+        // Adaugă această funcție pentru a crea butonul flotant
+        function createFloatingProcessButton() {
+            if (floatingProcessBtn) return;
+
+            floatingProcessBtn = document.createElement('button');
+            floatingProcessBtn.id = 'floatingProcessBtn';
+            floatingProcessBtn.innerHTML = '<i class="fas fa-play"></i> Start Procesare';
+            floatingProcessBtn.style.cssText = `
+                position: fixed;
+                bottom: 30px;
+                right: 30px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                padding: 16px 28px;
+                border-radius: 50px;
+                font-size: 1.1rem;
+                font-weight: bold;
+                cursor: pointer;
+                z-index: 1000;
+                box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                font-family: inherit;
+            `;
+
+            floatingProcessBtn.onmouseenter = () => {
+                floatingProcessBtn.style.transform = 'scale(1.05)';
+                floatingProcessBtn.style.boxShadow = '0 12px 28px rgba(102, 126, 234, 0.5)';
+            };
+
+            floatingProcessBtn.onmouseleave = () => {
+                floatingProcessBtn.style.transform = 'scale(1)';
+                floatingProcessBtn.style.boxShadow = '0 8px 20px rgba(102, 126, 234, 0.4)';
+            };
+
+            floatingProcessBtn.onclick = () => {
+                processFile();
+            };
+
+            document.body.appendChild(floatingProcessBtn);
+        }
+
+        // Ascunde/afișează butonul flotant
+        function toggleFloatingButton(show) {
+            if (floatingProcessBtn) {
+                floatingProcessBtn.style.display = show ? 'flex' : 'none';
+            }
+        }
+
         // Variabile pentru upload segmentat (acum singura metodă)
         let chunkedUploadSession = null;
         let uploadStartTime = null;
@@ -2805,6 +2858,14 @@
             isVideoFile = isSupportedVideo;
             isMp4File = fileName.endsWith('.mp4');
             
+            // RESETEAZĂ starea upload-ului
+            chunkedUploadSession = null;
+            uploadPaused = false;
+            uploadCancelled = false;
+            totalChunks = 0;
+            uploadedChunks = 0;
+            uploadStartTime = null;
+
             // Pregătește întotdeauna upload-ul segmentat
             prepareChunkedUpload();
             
@@ -2828,6 +2889,10 @@
             // Activează butoanele
             processBtn.disabled = false;
             quickPreviewBtn.disabled = false;
+
+            // Afișează butonul flotant
+            createFloatingProcessButton();
+            toggleFloatingButton(true);
 
             // Extrage preview video dacă e fișier video și nu e prea mare
             if (isVideoFile && file.size < 100 * 1024 * 1024) { // <100MB pentru preview
@@ -2860,6 +2925,7 @@
                 const indicator = document.createElement('div');
                 indicator.className = 'chunk-indicator';
                 indicator.id = `chunk-${i}`;
+                indicator.title = `Chunk ${i + 1}/${totalChunks}`;
                 chunkStatus.appendChild(indicator);
             }
             
@@ -2973,10 +3039,20 @@
         
         // Procesează fișierul complet
         async function processFile() {
-            if (!selectedFile) return;
+            if (!selectedFile) {
+                showToast('Selectați un fișier mai întâi!', 'error');
+                return;
+            }
+
+            // Dezactivează butonul flotant temporar
+            if (floatingProcessBtn) {
+                floatingProcessBtn.disabled = true;
+                floatingProcessBtn.style.opacity = '0.6';
+                floatingProcessBtn.style.cursor = 'wait';
+            }
             
             // Toate fișierele folosesc acum upload segmentat
-            startChunkedUpload();
+            await startChunkedUpload();
         }
         
         // Începe upload segmentat
@@ -2986,6 +3062,9 @@
             processingInfo.style.display = 'none';
             formatInfo.style.display = 'none';
             
+            // Ascunde butonul flotant în timpul procesării
+            toggleFloatingButton(false);
+
             // Actualizează interfața
             uploadStatus.textContent = 'Se inițializează...';
             pauseUploadBtn.disabled = false;
@@ -3022,12 +3101,26 @@
                 // După ce toate chunks sunt încărcate, începe procesarea
                 if (!uploadCancelled) {
                     await processAfterUpload();
+                } else {
+                    // Reactivăm butonul flotant dacă a fost anulat
+                    toggleFloatingButton(true);
+                    if (floatingProcessBtn) {
+                        floatingProcessBtn.disabled = false;
+                        floatingProcessBtn.style.opacity = '1';
+                        floatingProcessBtn.style.cursor = 'pointer';
+                    }
                 }
                 
             } catch (error) {
                 console.error('Eroare la upload segmentat:', error);
                 showError(`Eroare upload segmentat: ${error.message}`);
                 uploadStatus.textContent = 'Eroare';
+                toggleFloatingButton(true);
+                if (floatingProcessBtn) {
+                    floatingProcessBtn.disabled = false;
+                    floatingProcessBtn.style.opacity = '1';
+                    floatingProcessBtn.style.cursor = 'pointer';
+                }
             }
         }
         
@@ -3088,11 +3181,21 @@
                         chunkIndicator.classList.add('uploaded');
                     }
                     
+                    // Actualizează statusul
+                    uploadStatus.textContent = `Încărcare: ${uploadedChunks}/${totalChunks}`;
+
                 } catch (error) {
                     console.error(`Eroare la chunk ${chunkIndex}:`, error);
                     uploadStatus.textContent = 'Eroare la încărcare';
                     throw error;
                 }
+            }
+
+            // După ce toate chunk-urile sunt încărcate, așteaptă pentru combinare
+            if (!uploadCancelled && uploadedChunks === totalChunks) {
+                uploadStatus.textContent = 'Se combină fișierul...';
+                // Așteaptă 2 secunde pentru ca serverul să combine chunk-urile
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
         }
         
@@ -3167,6 +3270,47 @@
         // Procesează după upload complet
         async function processAfterUpload() {
             try {
+                uploadStatus.textContent = 'Se verifică fișierul...';
+
+                // Verifică statusul sesiunii până când este 'ready'
+                let maxRetries = 30;
+                let retryCount = 0;
+                let sessionReady = false;
+
+                while (retryCount < maxRetries && !sessionReady) {
+                    try {
+                        const statusResponse = await fetch(`/api/chunk_upload/status/${chunkedUploadSession}`);
+                        if (!statusResponse.ok) {
+                            console.log(`Status check ${retryCount + 1}: HTTP ${statusResponse.status}`);
+                            retryCount++;
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                            continue;
+                        }
+
+                        const statusData = await statusResponse.json();
+
+                        console.log(`Status check ${retryCount + 1}: ${statusData.status}, progress: ${statusData.progress}%`);
+
+                        if (statusData.status === 'ready') {
+                            sessionReady = true;
+                            break;
+                        } else if (statusData.status === 'error') {
+                            throw new Error('Eroare la combinarea fișierului');
+                        }
+                    } catch (e) {
+                        console.log(`Status check error: ${e.message}`);
+                    }
+
+                    retryCount++;
+                    if (retryCount < maxRetries) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                }
+
+                if (!sessionReady) {
+                    throw new Error('Timeout așteptând pregătirea fișierului');
+                }
+
                 uploadStatus.textContent = 'Se procesează...';
                 
                 // Afișează loading
@@ -3189,8 +3333,8 @@
                         model: currentModel,
                         language: currentLanguage,
                         translation_target: translationTarget || '',
-                        translation_engine: document.getElementById('translationEngineSelect').value,
-                    translation_instructions: document.getElementById('translationInstructions').value,
+                        translation_engine: document.getElementById('translationEngineSelect')?.value || 'transformers',
+                        translation_instructions: document.getElementById('translationInstructions')?.value || '',
                         adjust_segmentation: adjustSegmentationCheckbox.checked,
                         extract_audio_only: extractAudioOnlyCheckbox.checked
                     })
@@ -3200,6 +3344,7 @@
                 
                 if (processData.success) {
                     processId = processData.process_id;
+                    sessionStorage.setItem('process_id', processId);
                     pollTaskStatus(processId);
                 } else {
                     throw new Error(processData.error || 'Eroare la procesare');
@@ -3212,6 +3357,13 @@
                 processBtn.disabled = false;
                 quickPreviewBtn.disabled = false;
                 uploadStatus.textContent = 'Eroare procesare';
+                // Reafișează butonul flotant
+                toggleFloatingButton(true);
+                if (floatingProcessBtn) {
+                    floatingProcessBtn.disabled = false;
+                    floatingProcessBtn.style.opacity = '1';
+                    floatingProcessBtn.style.cursor = 'pointer';
+                }
             }
         }
         
@@ -3294,6 +3446,12 @@
             console.log('Processing result received:', data);
             updateProgress(100, 'Finalizare...');
             
+            // Ascunde butonul flotant
+            toggleFloatingButton(false);
+            if (floatingProcessBtn) {
+                floatingProcessBtn.style.display = 'none';
+            }
+
             // Re-încărcăm segmentele de pe disc pentru că nu mai vin în rezultatul task-ului
             try {
                 if (!data.audio_only) {
@@ -4071,6 +4229,19 @@
         function resetApp() {
             stopPlayback();
             
+            // Ascunde și resetează butonul flotant
+            if (floatingProcessBtn) {
+                floatingProcessBtn.style.display = 'none';
+                floatingProcessBtn.disabled = false;
+                floatingProcessBtn.style.opacity = '1';
+                floatingProcessBtn.style.cursor = 'pointer';
+            }
+
+            // Reafișează butonul flotant dacă există un fișier selectat
+            if (selectedFile) {
+                toggleFloatingButton(true);
+            }
+
             // Mutăm înapoi video preview în locul lui original
             const originalVideoParent = document.querySelector('.container');
             if (originalVideoParent && videoPreviewContainer) {
