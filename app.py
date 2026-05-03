@@ -1846,46 +1846,51 @@ def save_chunk(session_id, chunk_number, chunk_data):
             return False
 
 def combine_chunks(session_id):
-    """Combină toate chunk-urile într-un fișier complet"""
+    """Combină toate chunk-urile într-un fișier complet - Versiune asincronă safe"""
+    session = None
     with upload_lock:
-        if session_id not in upload_sessions:
+        if session_id in upload_sessions:
+            session = upload_sessions[session_id]
+            if len(session['received_chunks']) < session['total_chunks']:
+                print(f"Chunks incomplete: {len(session['received_chunks'])}/{session['total_chunks']}")
+                return None
+            session['status'] = 'combining'
+        else:
             return None
         
-        session = upload_sessions[session_id]
+    try:
+        chunk_dir = session['chunk_dir']
+        total_chunks = session['total_chunks']
+        final_path = os.path.join(chunk_dir, 'combined_file')
+
+        print(f"📂 Încep combinarea a {total_chunks} chunks pentru sesiunea {session_id}...")
+
+        with open(final_path, 'wb') as outfile:
+            for chunk_num in range(total_chunks):
+                chunk_path = os.path.join(chunk_dir, f'chunk_{chunk_num:06d}')
+                if os.path.exists(chunk_path):
+                    with open(chunk_path, 'rb') as infile:
+                        shutil.copyfileobj(infile, outfile)
+                    os.remove(chunk_path)
+                else:
+                    raise Exception(f"Chunk {chunk_num} lipsă la combinare")
         
-        # Verifică dacă avem toate chunk-urile
-        if len(session['received_chunks']) < session['total_chunks']:
-            print(f"Chunks incomplete: {len(session['received_chunks'])}/{session['total_chunks']}")
-            return None
-        
-        session['status'] = 'combining'
-        
-        try:
-            final_path = os.path.join(session['chunk_dir'], 'combined_file')
-            
-            with open(final_path, 'wb') as outfile:
-                # Scrie în ordine numerică
-                for chunk_num in range(session['total_chunks']):
-                    chunk_path = os.path.join(session['chunk_dir'], f'chunk_{chunk_num:06d}')
-                    if os.path.exists(chunk_path):
-                        with open(chunk_path, 'rb') as infile:
-                            shutil.copyfileobj(infile, outfile)
-                        os.remove(chunk_path)
-                    else:
-                        raise Exception(f"Chunk {chunk_num} lipsă")
-            
-            session['combined_path'] = final_path
-            session['status'] = 'ready'
-            session['progress'] = 100
-            
-            print(f"✅ Chunks combinate cu succes: {final_path}")
-            return final_path
-            
-        except Exception as e:
-            print(f"Eroare la combinarea chunk-urilor: {str(e)}")
-            session['status'] = 'error'
-            session['error'] = str(e)
-            return None
+        with upload_lock:
+            if session_id in upload_sessions:
+                session['combined_path'] = final_path
+                session['status'] = 'ready'
+                session['progress'] = 100
+
+        print(f"✅ Chunks combinate cu succes: {final_path}")
+        return final_path
+
+    except Exception as e:
+        print(f"❌ Eroare la combinarea chunk-urilor: {str(e)}")
+        with upload_lock:
+            if session_id in upload_sessions:
+                session['status'] = 'error'
+                session['error'] = str(e)
+        return None
 
 def cleanup_upload_session(session_id):
     """Curăță resursele unei sesiuni de upload"""
@@ -2439,11 +2444,12 @@ def chunk_upload():
         if not save_chunk(session_id, chunk_number, chunk_data):
             return jsonify({'error': 'Eroare la salvarea chunk-ului'}), 500
         
-        # Dacă este ultimul chunk, începe combinarea
+        # Dacă este ultimul chunk, începe combinarea asincronă pentru a evita timeout 524
         if chunk_number == total_chunks - 1:
-            combined_path = combine_chunks(session_id)
-            if not combined_path:
-                return jsonify({'error': 'Eroare la combinarea chunk-urilor'}), 500
+            print(f"📦 Ultimul chunk primit ({chunk_number}). Pornesc combinarea în background...")
+            thread = threading.Thread(target=combine_chunks, args=(session_id,))
+            thread.daemon = True
+            thread.start()
         
         return jsonify({
             'success': True,

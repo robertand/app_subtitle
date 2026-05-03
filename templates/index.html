@@ -3186,11 +3186,11 @@
                 }
             }
 
-            // După ce toate chunk-urile sunt încărcate, așteaptă pentru combinare
+            // După ce toate chunk-urile sunt încărcate, statusul se va schimba pe server
             if (!uploadCancelled && uploadedChunks === totalChunks) {
-                uploadStatus.textContent = 'Se combină fișierul...';
-                // Așteaptă 2 secunde pentru ca serverul să combine chunk-urile
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                console.log('Upload complet. Aștept combinarea fișierului pe server...');
+                uploadStatus.textContent = 'Combinare fișier...';
+                uploadStatus.style.color = '#f59e0b';
             }
         }
         
