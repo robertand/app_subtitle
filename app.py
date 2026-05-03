@@ -11,6 +11,9 @@ import os
 import sys
 import subprocess
 import importlib.util
+
+# Optimizări pentru memorie GPU - setat înainte de orice import torch
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import tempfile
 import requests
 import whisper
@@ -558,6 +561,32 @@ def load_model(model_name=DEFAULT_MODEL):
     
     with model_lock:
         if model_name not in loaded_models:
+            # Eliberăm memoria înainte de a încărca un model nou, mai ales dacă e large
+            if torch.cuda.is_available():
+                print(f"🧹 Pregătire VRAM înainte de încărcare model Whisper ({model_name})...")
+                unload_whisper_models()
+                unload_translation_models()
+
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
+                # Verificăm memoria disponibilă
+                gpu_info = torch.cuda.mem_get_info()
+                gpu_free = gpu_info[0] / (1024**3)
+                gpu_total = gpu_info[1] / (1024**3)
+                print(f"📊 VRAM: {gpu_free:.2f} GB Liber din {gpu_total:.2f} GB Total")
+
+                # Dacă cerem un model mare și avem prea puțină memorie, oprim vLLM
+                if model_name.startswith('large') and gpu_free < 10.0:
+                    print("⚠️ Memorie insuficientă pentru Large model. Opresc serverul vLLM pentru a elibera spațiu...")
+                    stop_vllm_server()
+                    time.sleep(2)
+                    torch.cuda.empty_cache()
+                    gpu_free = torch.cuda.mem_get_info()[0] / (1024**3)
+                    print(f"📊 VRAM după oprire vLLM: {gpu_free:.2f} GB Liber")
+
             print(f"Se încarcă modelul Whisper: {model_name}...")
             try:
                 start_time = time.time()

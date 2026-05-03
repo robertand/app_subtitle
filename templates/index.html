@@ -1562,9 +1562,6 @@
             </div>
 
             <div class="button-group" style="margin-top: 20px;">
-                <button class="btn" id="processBtn" onclick="processFile()" disabled style="min-width: 200px;">
-                    <i class="fas fa-play"></i> Start Transcriere
-                </button>
                 <button class="btn btn-secondary" id="quickPreviewBtn" onclick="quickPreview()" disabled>
                     <i class="fas fa-eye"></i> Previzualizare Rapidă
                 </button>
@@ -2063,7 +2060,7 @@
             if (floatingProcessBtn) return;
 
             floatingProcessBtn = document.createElement('button');
-            floatingProcessBtn.id = 'floatingProcessBtn';
+            floatingProcessBtn.id = 'processBtn'; // Reutilizăm ID-ul pentru compatibilitate cu restul JS
             floatingProcessBtn.innerHTML = '<i class="fas fa-play"></i> Start Procesare';
             floatingProcessBtn.style.cssText = `
                 position: fixed;
@@ -2096,7 +2093,9 @@
                 floatingProcessBtn.style.boxShadow = '0 8px 20px rgba(102, 126, 234, 0.4)';
             };
 
-            floatingProcessBtn.onclick = () => {
+            floatingProcessBtn.onclick = (e) => {
+                console.log('Floating Start button clicked');
+                e.preventDefault();
                 processFile();
             };
 
@@ -2125,7 +2124,7 @@
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
         const uploadText = document.getElementById('uploadText');
-        const processBtn = document.getElementById('processBtn');
+        let processBtn = document.getElementById('processBtn');
         const quickPreviewBtn = document.getElementById('quickPreviewBtn');
         const loading = document.getElementById('loading');
         const resultContainer = document.getElementById('resultContainer');
@@ -2886,13 +2885,13 @@
             videoPreview.src = '';
             imagePreview.src = '';
             
-            // Activează butoanele
-            processBtn.disabled = false;
-            quickPreviewBtn.disabled = false;
-
-            // Afișează butonul flotant
+            // Afișează/Inițializează butonul flotant ÎNAINTE de a-l accesa
             createFloatingProcessButton();
             toggleFloatingButton(true);
+
+            // Activează butoanele
+            if (processBtn) processBtn.disabled = false;
+            quickPreviewBtn.disabled = false;
 
             // Extrage preview video dacă e fișier video și nu e prea mare
             if (isVideoFile && file.size < 100 * 1024 * 1024) { // <100MB pentru preview
@@ -3073,7 +3072,7 @@
             
             try {
                 // Inițializează sesiunea de upload
-                const initResponse = await fetch('/api/chunk_upload/init', {
+                const initData = await safeFetchJson('/api/chunk_upload/init', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -3084,8 +3083,6 @@
                         totalChunks: totalChunks
                     })
                 });
-                
-                const initData = await initResponse.json();
                 
                 if (!initData.success) {
                     throw new Error(initData.error || 'Eroare la inițializarea upload-ului');
@@ -3160,12 +3157,10 @@
                     formData.append('sessionId', chunkedUploadSession);
                     
                     // Încarcă chunk-ul
-                    const uploadResponse = await fetch('/api/chunk_upload/upload', {
+                    const uploadData = await safeFetchJson('/api/chunk_upload/upload', {
                         method: 'POST',
                         body: formData
                     });
-                    
-                    const uploadData = await uploadResponse.json();
                     
                     if (!uploadData.success) {
                         throw new Error(uploadData.error || `Eroare la încărcarea chunk-ului ${chunkIndex}`);
@@ -3267,6 +3262,19 @@
             }, 1000);
         }
         
+        // Helper pentru fetch JSON cu error handling mai bun
+        async function safeFetchJson(url, options = {}) {
+            const response = await fetch(url, options);
+            const contentType = response.headers.get("content-type");
+            if (contentType && contentType.indexOf("application/json") !== -1) {
+                return await response.json();
+            } else {
+                const text = await response.text();
+                console.error("Non-JSON response:", text);
+                throw new Error(`Serverul a returnat o eroare (${response.status}).`);
+            }
+        }
+
         // Procesează după upload complet
         async function processAfterUpload() {
             try {
@@ -3279,15 +3287,7 @@
 
                 while (retryCount < maxRetries && !sessionReady) {
                     try {
-                        const statusResponse = await fetch(`/api/chunk_upload/status/${chunkedUploadSession}`);
-                        if (!statusResponse.ok) {
-                            console.log(`Status check ${retryCount + 1}: HTTP ${statusResponse.status}`);
-                            retryCount++;
-                            await new Promise(resolve => setTimeout(resolve, 1000));
-                            continue;
-                        }
-
-                        const statusData = await statusResponse.json();
+                        const statusData = await safeFetchJson(`/api/chunk_upload/status/${chunkedUploadSession}`);
 
                         console.log(`Status check ${retryCount + 1}: ${statusData.status}, progress: ${statusData.progress}%`);
 
@@ -3295,7 +3295,7 @@
                             sessionReady = true;
                             break;
                         } else if (statusData.status === 'error') {
-                            throw new Error('Eroare la combinarea fișierului');
+                            throw new Error('Eroare la combinarea fișierului: ' + (statusData.error || 'Necunoscută'));
                         }
                     } catch (e) {
                         console.log(`Status check error: ${e.message}`);
@@ -3308,14 +3308,14 @@
                 }
 
                 if (!sessionReady) {
-                    throw new Error('Timeout așteptând pregătirea fișierului');
+                    throw new Error('Timeout așteptând pregătirea fișierului pe server.');
                 }
 
-                uploadStatus.textContent = 'Se procesează...';
+                uploadStatus.textContent = 'Se inițiază procesarea...';
                 
                 // Afișează loading
                 loading.style.display = 'block';
-                processBtn.disabled = true;
+                if (processBtn) processBtn.disabled = true;
                 quickPreviewBtn.disabled = true;
                 
                 if (translationEnabled) {
@@ -3324,7 +3324,7 @@
                 }
                 
                 // Trimite cerere pentru procesare
-                const processResponse = await fetch(`/api/chunk_upload/process/${chunkedUploadSession}`, {
+                const processData = await safeFetchJson(`/api/chunk_upload/process/${chunkedUploadSession}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -3340,8 +3340,6 @@
                     })
                 });
                 
-                const processData = await processResponse.json();
-                
                 if (processData.success) {
                     processId = processData.process_id;
                     sessionStorage.setItem('process_id', processId);
@@ -3354,9 +3352,10 @@
                 console.error('Eroare la procesare:', error);
                 showError(`Eroare procesare: ${error.message}`);
                 loading.style.display = 'none';
-                processBtn.disabled = false;
+                if (processBtn) processBtn.disabled = false;
                 quickPreviewBtn.disabled = false;
                 uploadStatus.textContent = 'Eroare procesare';
+
                 // Reafișează butonul flotant
                 toggleFloatingButton(true);
                 if (floatingProcessBtn) {
