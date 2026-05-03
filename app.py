@@ -205,7 +205,7 @@ app.config['PROCESS_TIMEOUT'] = 7200  # 2 ore timeout pentru procesare
 
 # Dicționar pentru modele încărcate
 loaded_models = {}
-model_lock = threading.Lock()
+model_lock = threading.RLock()
 
 def unload_whisper_models():
     """Eliberează VRAM prin descărcarea modelelor Whisper"""
@@ -254,7 +254,7 @@ def unload_translation_models(keep_engine=None):
 
 # Modele de traducere
 translation_models = {}
-translation_lock = threading.Lock()
+translation_lock = threading.RLock()
 
 # Dicționar pentru sesiuni de upload
 upload_sessions = {}
@@ -731,12 +731,15 @@ def load_llm_model(engine='gemma'):
 
     model_key = f"llm-{engine}"
 
-    with translation_lock:
-        if model_key in translation_models:
-            return translation_models[model_key]
+    # Asigurăm ordinea corectă a lock-urilor pentru a evita deadlocks
+    # model_lock -> translation_lock
+    with model_lock:
+        with translation_lock:
+            if model_key in translation_models:
+                return translation_models[model_key]
 
-        # Eliberăm modelele Whisper și ALTE modele de traducere (non-LLM) înainte de încărcare
-        unload_whisper_models()
+            # Eliberăm modelele Whisper și ALTE modele de traducere (non-LLM) înainte de încărcare
+            unload_whisper_models()
         if torch.cuda.is_available():
             to_remove = []
             for k in list(translation_models.keys()):
