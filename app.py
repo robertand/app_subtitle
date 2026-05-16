@@ -12,12 +12,26 @@ import time
 import psutil
 import uuid
 import torch
+import torchaudio
+import numpy as np
+import re
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, MarianMTModel, MarianTokenizer
+import docx
+from docx import Document
+from docx.shared import Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 import shutil
 from pathlib import Path
 import hashlib
 import math
 import traceback
+# Silero VAD Integration with fallback
+SILERO_AVAILABLE = False
+try:
+    from silero_vad import get_speech_timestamps, load_silero_vad
+    SILERO_AVAILABLE = True
+except ImportError:
+    print("⚠️ silero-vad is not installed. VAD-based chunking will be disabled.")
 
 # Configurare director de date local
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
@@ -37,6 +51,51 @@ app.config['PROCESS_TIMEOUT'] = 7200  # 2 ore timeout pentru procesare
 loaded_models = {}
 model_lock = threading.Lock()
 
+def unload_whisper_models():
+    """Eliberează VRAM prin descărcarea modelelor Whisper"""
+    global loaded_models
+    with model_lock:
+        if not loaded_models:
+            return
+
+        print("🧹 Eliberare VRAM: Descărcare modele Whisper...")
+        for name in list(loaded_models.keys()):
+            model_data = loaded_models.pop(name)
+            if 'model' in model_data:
+                del model_data['model']
+
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print("✨ CUDA cache eliberat (Whisper)")
+
+def unload_translation_models(keep_engine=None):
+    """Eliberează VRAM prin descărcarea modelelor de traducere"""
+    global translation_models
+    with translation_lock:
+        if not translation_models:
+            return
+
+        to_remove = []
+        for key in list(translation_models.keys()):
+            if keep_engine and key == f"llm-{keep_engine}":
+                continue
+            to_remove.append(key)
+
+        if to_remove:
+            print(f"🧹 Eliberare VRAM: Descărcare {len(to_remove)} modele traducere standard...")
+            for key in to_remove:
+                model_data = translation_models.pop(key)
+                if 'model' in model_data:
+                    del model_data['model']
+
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print("✨ CUDA cache eliberat (Traducere)")
+
 # Modele de traducere
 translation_models = {}
 translation_lock = threading.Lock()
@@ -48,6 +107,151 @@ upload_lock = threading.Lock()
 # Managementul task-urilor în background
 processing_tasks = {}
 tasks_lock = threading.Lock()
+
+def convert_to_romanian_legacy(text):
+    """
+    Convertește diacriticele românești moderne (comma-below)
+    în diacriticele legacy/acceptate (cedilla-below).
+    ș (U+0219) -> ş (U+015F)
+    ț (U+021B) -> ț (U+0163)
+    """
+    mapping = {
+        'ș': 'ş',
+        'Ș': 'Ş',
+        'ț': 'ţ',
+        'Ț': 'Ţ'
+    }
+    for search, replace in mapping.items():
+        text = text.replace(search, replace)
+
+    # Space before !, ?, ?! (Pro TV requirement)
+    text = re.sub(r'([^\s])([!?])', r'\1 \2', text)
+    # Ensure no double spaces created
+    text = re.sub(r'\s+', ' ', text)
+
+    return text.strip()
+
+def wrap_text(text, max_chars=38):
+    """Împarte textul în linii care să nu depășească max_chars"""
+    words = text.split()
+    lines = []
+    current_line = []
+    current_length = 0
+
+    for word in words:
+        if current_length + len(word) + (1 if current_line else 0) <= max_chars:
+            current_line.append(word)
+            current_length += len(word) + (1 if current_line else 0)
+        else:
+            if current_line:
+                lines.append(" ".join(current_line))
+            current_line = [word]
+            current_length = len(word)
+
+    if current_line:
+        lines.append(" ".join(current_line))
+
+    return lines
+
+def generate_docx_export(process_id, segments, metadata):
+    """
+    Generează un fișier DOCX conform cerințelor de traducător.
+    """
+    try:
+        doc = Document()
+
+        # Setări font
+        style = doc.styles['Normal']
+        font = style.font
+        font.name = 'Arial'
+        font.size = Pt(12)
+
+        # Titlu serial (MAJUSCULE)
+        if metadata.get('title'):
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(metadata['title'].upper())
+            run.bold = True
+
+        # Seria și episodul
+        if metadata.get('series') or metadata.get('episode'):
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            series_text = f"Seria {metadata['series']}" if metadata.get('series') else ""
+            episode_text = f"episodul {metadata['episode']}" if metadata.get('episode') else ""
+            connector = ", " if series_text and episode_text else ""
+            p.add_run(f"{series_text}{connector}{episode_text}")
+
+        doc.add_paragraph() # Spațiu
+
+        # Traducerea și adaptarea
+        if metadata.get('translator'):
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.add_run("Traducerea și adaptarea")
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(metadata['translator'].upper())
+            run.bold = True
+            doc.add_paragraph()
+
+        # Segmentele de subtitrare
+        max_chars = int(metadata.get('max_chars', 38))
+        use_legacy = metadata.get('use_legacy', True)
+
+        for seg in segments:
+            text = seg['text']
+            if use_legacy:
+                text = convert_to_romanian_legacy(text)
+
+            wrapped_lines = wrap_text(text, max_chars)
+
+            p = doc.add_paragraph()
+            for i, line in enumerate(wrapped_lines):
+                p.add_run(line)
+                if i < len(wrapped_lines) - 1:
+                    p.add_run("\n")
+
+        # Final episod
+        if metadata.get('series') and metadata.get('episode'):
+            doc.add_paragraph()
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(f"SFÂRŞITUL EPISODULUI {metadata['episode']}, SERIA {metadata['series']}".upper())
+            run.bold = True
+
+        # Redactor
+        if metadata.get('redactor'):
+            doc.add_paragraph()
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.add_run("Redactor")
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(metadata['redactor'].upper())
+            run.bold = True
+
+        # Salvare
+        process_dir = get_process_dir(process_id)
+        base_filename = metadata.get('video_filename', 'export')
+        if '.' in base_filename:
+            base_filename = base_filename.rsplit('.', 1)[0]
+
+        docx_filename = f"{base_filename}.docx"
+        docx_path = os.path.join(process_dir, docx_filename)
+        doc.save(docx_path)
+
+        return docx_filename
+
+    except Exception as e:
+        print(f"Eroare la generarea DOCX: {e}")
+        traceback.print_exc()
+        return None
+
+
+# Model VAD (Silero)
+vad_model = None
+vad_lock = threading.Lock()
 
 # Opțiuni modele disponibile
 AVAILABLE_MODELS = {
@@ -133,7 +337,17 @@ TRANSLATION_MODELS_CONFIG = {
             'sk-en': 'Helsinki-NLP/opus-mt-sk-en',
             'en-sl': 'Helsinki-NLP/opus-mt-en-sl',
             'sl-en': 'Helsinki-NLP/opus-mt-sl-en',
+            'tr-en': 'Helsinki-NLP/opus-mt-tr-en',
+            'fr-ro': 'Helsinki-NLP/opus-mt-fr-ro',
         }
+    },
+    'gemma': {
+        'name': 'google/translategemma-12b-it',
+        'display_name': 'Gemma 12B (Best)'
+    },
+    'mistral': {
+        'name': 'mistralai/Mistral-7B-Instruct-v0.3', # This might be too large for typical environment, but added as option
+        'display_name': 'Mistral 7B'
     }
 }
 
@@ -172,6 +386,45 @@ TRANSLATION_LANGUAGES = {
     'id': 'Indoneziană',
     'ms': 'Malaeză',
     'fa': 'Persană',
+    'ur': 'Urdu',
+    'sw': 'Swahili'
+}
+
+# Limbi pentru prompt-uri LLM (nume în engleză pentru mai bună înțelegere de către model)
+LLM_PROMPT_LANGUAGES = {
+    'ro': 'Romanian',
+    'en': 'English',
+    'tr': 'Turkish',
+    'fr': 'French',
+    'de': 'German',
+    'es': 'Spanish',
+    'it': 'Italian',
+    'ru': 'Russian',
+    'zh': 'Chinese',
+    'ja': 'Japanese',
+    'ko': 'Korean',
+    'ar': 'Arabic',
+    'hi': 'Hindi',
+    'pt': 'Portuguese',
+    'nl': 'Dutch',
+    'pl': 'Polish',
+    'sv': 'Swedish',
+    'sk': 'Slovak',
+    'sl': 'Slovenian',
+    'da': 'Danish',
+    'fi': 'Finnish',
+    'no': 'Norwegian',
+    'cs': 'Czech',
+    'hu': 'Hungarian',
+    'bg': 'Bulgarian',
+    'el': 'Greek',
+    'uk': 'Ukrainian',
+    'vi': 'Vietnamese',
+    'th': 'Thai',
+    'he': 'Hebrew',
+    'id': 'Indonesian',
+    'ms': 'Malay',
+    'fa': 'Persian',
     'ur': 'Urdu',
     'sw': 'Swahili'
 }
@@ -323,19 +576,326 @@ def load_translation_model(source_lang, target_lang):
                 print(f"✗ Eroare critică la încărcarea modelului: {str(e2)}")
                 return None
 
-def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
+def load_llm_model(engine='gemma'):
+    """Încarcă un model LLM pentru traducere"""
+    global translation_models
+
+    model_key = f"llm-{engine}"
+
+    with translation_lock:
+        if model_key in translation_models:
+            return translation_models[model_key]
+
+        # Eliberăm modelele Whisper și ALTE modele de traducere (non-LLM) înainte de încărcare
+        unload_whisper_models()
+        # Dar eliberăm modelele standard doar dacă suntem pe GPU, pe CPU nu contează așa mult
+        if torch.cuda.is_available():
+            # keep_engine=None pentru că încă nu l-am pus în dict
+            # Această funcție este chemată în interiorul translation_lock, deci suntem safe
+            to_remove = []
+            for k in list(translation_models.keys()):
+                if k != model_key:
+                    to_remove.append(k)
+
+            if to_remove:
+                print(f"🧹 Eliberare VRAM: Descărcare {len(to_remove)} modele vechi pentru a face loc LLM...")
+                for k in to_remove:
+                    m_data = translation_models.pop(k)
+                    if 'model' in m_data: del m_data['model']
+                torch.cuda.empty_cache()
+
+        print(f"Se încarcă LLM: {engine}...")
+        start_time = time.time()
+
+        try:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model_config = TRANSLATION_MODELS_CONFIG.get(engine)
+            if not model_config:
+                return None
+
+            model_name = model_config['name']
+
+            from transformers import AutoModelForCausalLM
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+            # Încercăm încărcare optimizată (4bit) dacă suntem pe CUDA
+            model_kwargs = {
+                "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
+                "device_map": "auto" if device == "cuda" else None,
+            }
+
+            if device == "cuda":
+                try:
+                    # Check bitsandbytes version
+                    import bitsandbytes
+                    from transformers import BitsAndBytesConfig
+                    model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_use_double_quant=True
+                    )
+                    print(f"✨ Folosesc cuantizare 4bit pentru {engine}")
+                except Exception as bnb_err:
+                    print(f"⚠️ bitsandbytes nu poate fi folosit: {bnb_err}.")
+                    print("⚠️ ACEST LUCRU VA CAUZA CONSUM MARE DE VRAM ȘI POSIBILĂ OFFLOAD PE CPU (LENT).")
+                    print("⚠️ Instalează bitsandbytes: pip install bitsandbytes")
+                    if "quantization_config" in model_kwargs:
+                        del model_kwargs["quantization_config"]
+
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    **model_kwargs
+                )
+            except Exception as load_err:
+                if "quantization_config" in model_kwargs:
+                    print(f"⚠️ Încărcarea 4bit a eșuat ({load_err}). Reîncerc FP16 standard...")
+                    del model_kwargs["quantization_config"]
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_name,
+                        **model_kwargs
+                    )
+                else:
+                    raise load_err
+
+            if device != "cuda":
+                model = model.to(device)
+
+            load_time = time.time() - start_time
+
+            translation_models[model_key] = {
+                'model': model,
+                'tokenizer': tokenizer,
+                'device': device,
+                'load_time': load_time,
+                'engine': engine,
+                'model_name': model_name,
+                'model_type': 'llm'
+            }
+
+            print(f"✓ LLM {engine} încărcat în {load_time:.1f}s pe {device}")
+
+            # Log memory usage if on CUDA
+            if device == "cuda":
+                mem_allocated = torch.cuda.memory_allocated() / 1024**3
+                mem_reserved = torch.cuda.memory_reserved() / 1024**3
+                print(f"📊 CUDA Mem: Allocated: {mem_allocated:.2f}GB, Reserved: {mem_reserved:.2f}GB")
+
+            return translation_models[model_key]
+        except Exception as e:
+            print(f"✗ Eroare la încărcarea LLM {engine}: {str(e)}")
+            return None
+
+def translate_with_llm(texts, source_lang, target_lang, engine='gemma', instructions=None):
+    """Traduce texte folosind un model LLM (Qwen/Mistral)"""
+    model_data = load_llm_model(engine)
+    if not model_data:
+        return texts
+
+    model = model_data['model']
+    tokenizer = model_data['tokenizer']
+    device = model_data['device']
+
+    source_name = LLM_PROMPT_LANGUAGES.get(source_lang, SUPPORTED_LANGUAGES.get(source_lang, source_lang))
+    target_name = LLM_PROMPT_LANGUAGES.get(target_lang, SUPPORTED_LANGUAGES.get(target_lang, target_lang))
+
+    translated_texts = []
+
+    for text in texts:
+        if not text.strip():
+            translated_texts.append(text)
+            continue
+
+        # Prompt specific pentru TranslateGemma sau general LLM
+        try:
+            instr_part = f"\nInstructions: {instructions}" if instructions else ""
+
+            if engine == 'gemma':
+                # Format oficial TranslateGemma:
+                # Translate the following text from {src_lang} to {tgt_lang}.\n{src_lang}: {text}\n{tgt_lang}:
+                text_prompt = f"Translate the following text from {source_name} to {target_name}.{instr_part}\n{source_name}: {text}\n{target_name}:"
+            else:
+                # Few-shot prompting for better compliance (Mistral, etc.)
+                system_content = "You are a professional subtitle translator. You MUST output ONLY the translated text. NO meta-talk, NO analysis, NO numbered lists, NO 'Thinking Process'. Just the translation."
+                if instructions:
+                    system_content += f" Additional instructions: {instructions}"
+
+                messages = [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": f"Translate to {target_name}: Hello, how are you?"},
+                    {"role": "assistant", "content": "Salut, ce mai faci?" if target_lang == 'ro' else "Hello"},
+                    {"role": "user", "content": f"Translate from {source_name} to {target_name}: {text}"}
+                ]
+                try:
+                    text_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                except Exception as template_err:
+                    print(f"Chat template error ({engine}): {template_err}. Falling back to simple prompt.")
+                    text_prompt = f"Translate from {source_name} to {target_name}: {text}{instr_part}\nTranslation:"
+
+            # Asigurăm că input-ul este corect formatat pentru model.generate
+            inputs = tokenizer(text_prompt, return_tensors="pt").to(device)
+            # Parametri pentru a reduce verbozitatea și repetiția
+            gen_kwargs = {
+                "max_new_tokens": 256,
+                "do_sample": False,
+                "temperature": 0.0
+            }
+
+            if engine == 'gemma':
+                gen_kwargs["repetition_penalty"] = 1.2
+
+            generated_ids = model.generate(
+                inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                **gen_kwargs
+            )
+
+            # Decodăm doar partea generată
+            generated_ids = generated_ids[0][inputs.input_ids.shape[-1]:]
+
+            response = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+            # Eliberăm tensorii imediat
+            del inputs
+            del generated_ids
+
+            # Curățare post-generare pentru halucinațiile persistente
+            response = re.sub(r'<(thought|thinking)>.*?</\1>', '', response, flags=re.DOTALL | re.IGNORECASE)
+
+            # Dacă LLM-ul listează drafturi sau variante, încercăm să extragem ultima variantă (de obicei cea mai rafinată)
+            # sau varianta marcată ca fiind pentru subtitrări
+            draft_patterns = [
+                r"(?:Draft|Varianta|Version)\s*(?:\d+|subtitle|concise)[\s:-]+(.+?)(?=\n|$)",
+                r"(?:^|\n)\s*\*\s*(?:Draft|Varianta|Version).*?:\s*(.+?)(?=\n|$)"
+            ]
+
+            draft_found = False
+            for pattern in draft_patterns:
+                matches = re.findall(pattern, response, flags=re.IGNORECASE | re.MULTILINE)
+                if matches:
+                    # Alegem ultima variantă care pare a fi traducerea propriu-zisă
+                    last_match = matches[-1].strip()
+                    # Dacă match-ul conține alte drafturi (regex greediness issue), îl curățăm
+                    if "*" in last_match or "Draft" in last_match:
+                        sub_matches = re.split(r'\s*\*\s*', last_match)
+                        response = sub_matches[-1].split(':')[-1].strip()
+                    else:
+                        response = last_match
+                    draft_found = True
+                    break
+
+            if not draft_found:
+                # Căutăm textul după ultimele cuvinte cheie care indică începutul traducerii reale
+                # Adăugăm și cuvinte cheie în turcă
+                markers = [
+                    r"Final Translation:",
+                    r"Translation to " + re.escape(target_name) + r":",
+                    r"Translation:",
+                    r"Traducere Finală:",
+                    r"Traducere:",
+                    r"Rezultat:",
+                    r"Son Çeviri:",
+                    r"Çeviri:",
+                    r"Target:",
+                    re.escape(target_name) + r":"
+                ]
+
+                for marker in markers:
+                    pattern = re.compile(marker, re.IGNORECASE)
+                    parts = pattern.split(response)
+                    if len(parts) > 1:
+                        response = parts[-1].strip()
+                        break
+
+            # Eliminăm blocurile de analiză numerotate (1. Analyze..., 2. Translate...)
+            if re.search(r'^\d+\.\s+\*\*', response, re.MULTILINE):
+                # Dacă încă avem text numerotat, încercăm să găsim ultima secțiune de traducere
+                sections = re.split(r'\n\d+\.\s+', response)
+                for section in reversed(sections):
+                    if "traduc" in section.lower() or "translat" in section.lower():
+                        # Extragem doar textul, eliminând titlul secțiunii
+                        response = re.sub(r'^.*?\*\*.*?\n', '', section, flags=re.IGNORECASE).strip()
+                        break
+
+            # Eliminăm markdown-ul rezidual (bold, liste)
+            # Eliminăm markdown bolding care ar putea înconjura textul întreg
+            response = re.sub(r'^\*\*(.*?)\*\*$', r'\1', response)
+            # Eliminăm etichete bold gen **Literal:** în interior
+            response = re.sub(r'\*\*.*?\*\*', '', response)
+            response = response.strip().strip('*').strip('-').strip()
+
+            # Eliminăm ghilimelele reziduale
+            response = response.strip().strip('"').strip("'").strip()
+
+            # Verificare finală: dacă modelul a repetat sursa sau e prea similar cu originalul
+            # dar limba cerută e alta, încercăm o a doua variantă mai agresivă
+            is_repetition = (response.strip().lower() == text.strip().lower())
+
+            # Euristică: dacă textul conține cuvinte englezești comune în output care ar trebui să fie altă limbă
+            if not is_repetition and source_lang == 'en' and target_lang != 'en':
+                english_words = {' the ', ' is ', ' and ', ' with ', ' for '}
+                if any(word in f" {response.lower()} " for word in english_words):
+                    is_repetition = True
+
+            if is_repetition and engine == 'gemma':
+                print(f"Gemma repetition detected for: '{text}'. Retrying with strict prompt...")
+                # Re-încercare cu prompt de urgență
+                strict_prompt = f"Translate the FOLLOWING TEXT into {target_name.upper()}. DO NOT REPEAT THE SOURCE.\nTEXT: {text}\nTRANSLATION:"
+                try:
+                    retry_inputs = tokenizer([strict_prompt], return_tensors="pt").to(device)
+                    # Forțăm modelul să nu repete input-ul folosind și mai multă penalizare
+                    retry_ids = model.generate(
+                        **retry_inputs,
+                        max_new_tokens=100,
+                        do_sample=True,
+                        temperature=0.3,
+                        repetition_penalty=1.5
+                    )
+                    retry_ids = [ids[len(retry_inputs.input_ids[0]):] for ids in retry_ids]
+                    response = tokenizer.batch_decode(retry_ids, skip_special_tokens=True)[0].strip()
+                    # Curățăm și rezultatul re-încercării
+                    response = response.split('\n')[0].split(':')[-1].strip()
+                    print(f"Gemma Retry Result: '{response}'")
+                except:
+                    pass
+
+            # Dacă răspunsul e gol după curățare, folosim textul original ca fallback
+            translated_texts.append(response if response and response.strip() else text)
+        except Exception as e:
+            print(f"LLM translation error: {e}")
+            translated_texts.append(text)
+
+    # Curățăm VRAM după batch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return translated_texts
+
+def translate_segment_batch(segments, source_lang, target_lang, batch_size=5, engine='transformers', instructions=None):
     """Traduce un batch de segmente păstrând timecode-ul"""
     if not segments or source_lang == target_lang:
         return segments
+
+    # Bridge special pentru Turcă -> Română în mod Batch (Transformers)
+    if source_lang == 'tr' and target_lang == 'ro' and engine == 'transformers':
+        print("Turkish -> Romanian Batch via bridge...")
+        # Traducem în engleză batch-ul (folosind MarianMT dacă e disponibil)
+        segments_en = translate_segment_batch(segments, 'tr', 'en', batch_size=batch_size, engine=engine, instructions=instructions)
+        # Apoi traducem din engleză în română (folosind MarianMT)
+        return translate_segment_batch(segments_en, 'en', 'ro', batch_size=batch_size, engine=engine, instructions=instructions)
     
     try:
-        # Încarcă modelul de traducere
-        model_data = load_translation_model(source_lang, target_lang)
-        
+        if engine in ['gemma', 'mistral']:
+            model_data = load_llm_model(engine)
+        else:
+            # Încarcă modelul de traducere standard
+            model_data = load_translation_model(source_lang, target_lang)
+
         if not model_data:
-            print(f"✗ Nu există model de traducere pentru {source_lang}->{target_lang}")
+            print(f"✗ Nu există model de traducere ({engine}) pentru {source_lang}->{target_lang}")
             return segments
-        
+
         model = model_data['model']
         tokenizer = model_data['tokenizer']
         device = model_data['device']
@@ -348,37 +908,92 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
             batch_texts = [seg['text'] for seg in batch]
             
             try:
-                if model_type == 'marian':
+                if model_type == 'llm':
+                    translated_texts = translate_with_llm(batch_texts, source_lang, target_lang, engine=engine, instructions=instructions)
+
+                    # Verificăm dacă Gemma a repetat turca (eșec)
+                    if engine == 'gemma' and source_lang == 'tr' and target_lang == 'ro':
+                        failed_indices = []
+                        for j, res in enumerate(translated_texts):
+                            # Dacă e identic sau pare turcă, folosim fallback Transformers
+                            if res.strip().lower() == batch_texts[j].strip().lower():
+                                failed_indices.append(j)
+
+                        if failed_indices:
+                            print(f"Gemma TR->RO failure detected for {len(failed_indices)} segments in batch. Using Batch Transformers fallback...")
+                            # Colectăm textele eșuate pentru a le traduce în batch, mult mai rapid decât translate_text individual
+                            failed_batch = []
+                            for idx in failed_indices:
+                                failed_batch.append({'text': batch_texts[idx]})
+
+                            # Traducem batch-ul de eșecuri folosind bridge-ul optimizat de transformers
+                            fallback_results = translate_segment_batch(failed_batch, 'tr', 'ro', engine='transformers')
+
+                            # Reintroducem rezultatele traduse corect în batch-ul curent
+                            for idx, fb_res in zip(failed_indices, fallback_results):
+                                translated_texts[idx] = fb_res['text']
+
+                elif model_type == 'marian':
                     # MarianMT/Opus-MT - direct translation
                     inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
                     translated = model.generate(**inputs, max_length=512, num_beams=4, early_stopping=True)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
                     
                 elif model_type == 'nllb':
-                    # NLLB-200
-                    src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
-                    tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
+                    # NLLB-200 logic robustificat
+                    src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang)
+                    if not src_code: src_code = f"{source_lang}_Latn"
 
-                    if hasattr(tokenizer, 'src_lang'):
-                        tokenizer.src_lang = src_code
+                    tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang)
+                    if not tgt_code: tgt_code = f"{target_lang}_Latn"
+
+                    # Setează explicit limbile în tokenizer (dacă suportă)
+                    if hasattr(tokenizer, 'src_lang'): tokenizer.src_lang = src_code
+                    if hasattr(tokenizer, 'tgt_lang'): tokenizer.tgt_lang = tgt_code
 
                     forced_bos_token_id = None
                     try:
-                        if hasattr(tokenizer, 'get_lang_id'):
-                            forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
-                        elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
+                        if hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
                             forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
-                    except:
-                        pass
+                        elif hasattr(tokenizer, 'get_lang_id'):
+                            forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
+                    except Exception as e:
+                        print(f"NLLB Lang ID error: {e}")
 
-                    inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+                    print(f"NLLB Batch: {src_code} -> {tgt_code} (BOS: {forced_bos_token_id})")
+
+                    inputs = tokenizer(
+                        batch_texts,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                        max_length=512
+                    ).to(device)
                     
-                    gen_kwargs = {"max_length": 512, "num_beams": 4, "early_stopping": True}
-                    if forced_bos_token_id is not None:
-                        gen_kwargs["forced_bos_token_id"] = forced_bos_token_id
+                    gen_kwargs = {
+                        "max_length": 512,
+                        "num_beams": 4,
+                        "early_stopping": True,
+                        "forced_bos_token_id": forced_bos_token_id
+                    }
 
                     translated = model.generate(**inputs, **gen_kwargs)
                     translated_texts = tokenizer.batch_decode(translated, skip_special_tokens=True)
+
+                    # Detecție viciu NLLB (ieșire în franceză)
+                    if target_lang == 'ro' and source_lang != 'fr':
+                        failed_indices = []
+                        french_indicators = {' le ', ' la ', ' et ', ' est ', ' dans '}
+                        for idx, t_text in enumerate(translated_texts):
+                            if any(ind in f" {t_text.lower()} " for ind in french_indicators):
+                                failed_indices.append(idx)
+
+                        if failed_indices:
+                            print(f"NLLB artifacts detected for {len(failed_indices)} segments. Retrying via optimized Batch bridge...")
+                            failed_batch = [{'text': batch_texts[idx]} for idx in failed_indices]
+                            fallback_results = translate_segment_batch(failed_batch, source_lang, target_lang, engine='transformers')
+                            for idx, fb_res in zip(failed_indices, fallback_results):
+                                translated_texts[idx] = fb_res['text']
                 
                 else:
                     # Fallback pentru alte modele
@@ -405,12 +1020,16 @@ def translate_segment_batch(segments, source_lang, target_lang, batch_size=5):
         print(f"✗ Eroare la traducere: {str(e)}")
         return segments
 
-def translate_segments(segments, source_lang, target_lang):
+def translate_segments(segments, source_lang, target_lang, engine='transformers', instructions=None):
     """Traduce toate segmentele păstrând timecode-ul și structura"""
     if not segments or source_lang == target_lang:
         return segments
     
-    print(f"Încep traducerea din {source_lang} în {target_lang}...")
+    # Dacă folosim un LLM, descărcăm modelele Whisper pentru a face loc în VRAM
+    if engine in ['gemma', 'mistral']:
+        unload_whisper_models()
+
+    print(f"Încep traducerea din {source_lang} în {target_lang} ({engine})...")
     print(f"Număr segmente: {len(segments)}")
     start_time = time.time()
     
@@ -432,7 +1051,9 @@ def translate_segments(segments, source_lang, target_lang):
         # Traduce segmentele scurte în batch-uri
         if short_segments:
             print(f"Traduc {len(short_segments)} segmente scurte...")
-            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=10)
+            # Pentru LLM folosim un batch mai mic pentru a evita OOM (Out of Memory)
+            effective_batch_size = 5 if engine in ['gemma', 'mistral'] else 10
+            translated_short = translate_segment_batch(short_segments, source_lang, target_lang, batch_size=effective_batch_size, engine=engine, instructions=instructions)
             translated_segments.extend(translated_short)
         
         # Traduce segmentele lungi individual pentru mai multă precizie
@@ -441,7 +1062,7 @@ def translate_segments(segments, source_lang, target_lang):
             for seg in long_segments:
                 try:
                     # Traduce fiecare segment lung individual
-                    batch_result = translate_segment_batch([seg], source_lang, target_lang, batch_size=1)
+                    batch_result = translate_segment_batch([seg], source_lang, target_lang, batch_size=1, engine=engine, instructions=instructions)
                     if batch_result:
                         translated_segments.append(batch_result[0])
                     else:
@@ -468,6 +1089,12 @@ def translate_text(text, source_lang, target_lang):
         return text
     
     text = text.strip()
+
+    # Excepție pentru Turcă -> Română (NLLB are probleme, încercăm via Engleză care e mai stabilă)
+    if source_lang == 'tr' and target_lang == 'ro':
+        print("Turkish -> Romanian via English bridge...")
+        text_en = translate_text(text, 'tr', 'en')
+        return translate_text(text_en, 'en', 'ro')
     
     try:
         # Încarcă modelul de traducere
@@ -489,42 +1116,50 @@ def translate_text(text, source_lang, target_lang):
             
         elif model_type == 'nllb':
             # NLLB-200
-            src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang, f"{source_lang}_Latn")
-            tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang, f"{target_lang}_Latn")
-            
-            # Setează limba sursă
-            if hasattr(tokenizer, 'src_lang'):
-                tokenizer.src_lang = src_code
+            src_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(source_lang)
+            if not src_code: src_code = f"{source_lang}_Latn"
+
+            tgt_code = TRANSLATION_MODELS_CONFIG['nllb']['languages'].get(target_lang)
+            if not tgt_code: tgt_code = f"{target_lang}_Latn"
+
+            print(f"NLLB Single: {src_code} -> {tgt_code}")
+
+            # Setează limba sursă și țintă
+            tokenizer.src_lang = src_code
             
             # Obține ID-ul limbii țintă
             forced_bos_token_id = None
             try:
-                if hasattr(tokenizer, 'get_lang_id'):
-                    forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
-                elif hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
+                if hasattr(tokenizer, 'lang_code_to_id') and tgt_code in tokenizer.lang_code_to_id:
                     forced_bos_token_id = tokenizer.lang_code_to_id[tgt_code]
+                elif hasattr(tokenizer, 'get_lang_id'):
+                    forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
             except:
                 pass
             
             inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
             
-            if forced_bos_token_id is not None:
-                translated = model.generate(
-                    **inputs,
-                    forced_bos_token_id=forced_bos_token_id,
-                    max_length=512,
-                    num_beams=4,
-                    early_stopping=True
-                )
-            else:
-                translated = model.generate(
-                    **inputs,
-                    max_length=512,
-                    num_beams=4,
-                    early_stopping=True
-                )
+            translated = model.generate(
+                **inputs,
+                forced_bos_token_id=forced_bos_token_id,
+                max_length=512,
+                num_beams=4,
+                early_stopping=True
+            )
             
             result = tokenizer.decode(translated[0], skip_special_tokens=True)
+
+            # Detecție franceză în loc de română (viciu NLLB)
+            if target_lang == 'ro' and source_lang != 'fr':
+                if any(ind in f" {result.lower()} " for ind in {' le ', ' la ', ' et ', ' est '}):
+                    print(f"NLLB single detection: French artifacts. Retrying with explicit Romanian instruction...")
+                    # Forțăm prefixul în text
+                    text_with_prefix = f"Translate to Romanian: {text}"
+                    inputs = tokenizer(text_with_prefix, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+                    translated = model.generate(**inputs, forced_bos_token_id=forced_bos_token_id, max_length=512)
+                    result = tokenizer.decode(translated[0], skip_special_tokens=True)
+                    # Eliminăm prefixul din rezultat
+                    result = result.replace("Translate to Romanian:", "").strip()
         
         else:
             result = text
@@ -954,6 +1589,123 @@ def write_srt(segments, output_path):
         print(f"Eroare la scrierea SRT: {str(e)}")
         return False
 
+def load_vad_model():
+    """Încarcă modelul Silero VAD"""
+    global vad_model
+    if not SILERO_AVAILABLE:
+        return None
+
+    with vad_lock:
+        if vad_model is None:
+            try:
+                print("Se încarcă modelul Silero VAD...")
+                vad_model = load_silero_vad()
+                print("✓ Model Silero VAD încărcat")
+            except Exception as e:
+                print(f"⚠️ Error loading Silero VAD: {e}")
+                return None
+    return vad_model
+
+def get_vad_segments(audio_path, min_speech_duration=0.5, min_silence_duration=0.5):
+    """
+    Segmentează audio-ul în fraze folosind Silero VAD.
+    Returnează o listă de dict-uri {start, end}
+    """
+    try:
+        model = load_vad_model()
+
+        # Load audio
+        wav, sr = torchaudio.load(audio_path)
+        if wav.shape[0] > 1:
+            wav = wav.mean(dim=0, keepdim=True)
+
+        if sr != 16000:
+            resampler = torchaudio.transforms.Resample(sr, 16000)
+            wav = resampler(wav)
+            sr = 16000
+
+        wav_np = wav.squeeze().numpy()
+
+        # Get speech timestamps
+        speech_timestamps = get_speech_timestamps(
+            wav_np,
+            model,
+            sampling_rate=sr,
+            min_speech_duration_ms=int(min_speech_duration*1000),
+            min_silence_duration_ms=int(min_silence_duration*1000),
+            speech_pad_ms=200
+        )
+
+        segments = []
+        for ts in speech_timestamps:
+            segments.append({
+                'start': ts['start'] / sr,
+                'end': ts['end'] / sr
+            })
+
+        return segments
+    except Exception as e:
+        print(f"Eroare la segmentare VAD: {str(e)}")
+        return None
+
+def filter_hallucinations(text):
+    """Elimină halucinațiile Whisper comune pentru limba română"""
+    if not text:
+        return ""
+
+    hallucinations = [
+        r"Vă mulțumim pentru vizionare!",
+        r"Subtitrare realizată de",
+        r"Vă mulțumesc pentru vizionare!",
+        r"Sper că v-a plăcut acest episod",
+        r"Nu uitați să vă abonați",
+        r"Dacă v-a plăcut, nu uitați să dați un like",
+        r"Urmăriți-ne pentru mai multe",
+        r"Vizionare plăcută!",
+        r"Toate drepturile rezervate",
+        r"Traducerea și adaptarea",
+        r"Sursă video",
+        r"Mulțumesc pentru vizionare!",
+        # Turkish hallucinations
+        r"İzlediğiniz için teşekkürler",
+        r"Abone olmayı unutmayın",
+        r"Beğenmeyi unutmayın",
+        r"İzlediğiniz için teşekkür ederim",
+        r"Daha fazlası için takipte kalın",
+        r"Tüm hakları saklıdır",
+        r"Türkçe altyazı",
+        r"Çeviri ve adaptasyon"
+    ]
+
+    filtered_text = text
+    for pattern in hallucinations:
+        filtered_text = re.sub(pattern, "", filtered_text, flags=re.IGNORECASE)
+
+    return filtered_text.strip()
+
+def deduplicate_segments(segments):
+    """Elimină segmentele care repetă același text consecutiv (stuttering)"""
+    if not segments:
+        return []
+
+    unique_segments = []
+    for i, seg in enumerate(segments):
+        if i == 0:
+            unique_segments.append(seg)
+            continue
+
+        current_text = seg['text'].strip().lower()
+        last_text = unique_segments[-1]['text'].strip().lower()
+
+        # Dacă textul este identic cu cel anterior, îl ignorăm pe cel curent
+        # dar extindem timpul celui anterior
+        if current_text == last_text and (seg['start'] - unique_segments[-1]['end']) < 2.0:
+            unique_segments[-1]['end'] = seg['end']
+        else:
+            unique_segments.append(seg)
+
+    return unique_segments
+
 def split_text_by_duration(text, duration, max_chars, min_segment_duration=1.0):
     """Împarte textul în bucăți pe baza duratei și numărului de caractere"""
     words = text.split()
@@ -1252,105 +2004,141 @@ def process_large_file(file_path, model_name, language, translation_target,
             result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
             duration = float(result.stdout.strip())
 
-            # Chunks de 10 minute
-            chunk_duration = 600
-            total_chunks = math.ceil(duration / chunk_duration)
+            # Sliding window approach for interleaved segments (30s window, 15s step)
+            window_duration = 30
+            step_duration = 15
+            num_steps = math.ceil(duration / step_duration)
 
-            print(f"Durata totală: {duration:.1f}s, Chunks: {total_chunks}")
+            print(f"Durata totală: {duration:.1f}s, Pași (interleaved): {num_steps}")
 
-            all_segments = []
+            all_raw_segments = []
             detected_language = language
 
-            # Procesează fiecare chunk din fișierul audio extras
-            for chunk_idx in range(total_chunks):
-                # Verifică dacă task-ul a fost anulat
+            # Obține segmentele VAD pentru a optimiza (opțional, dar recomandat)
+            vad_segments = get_vad_segments(full_audio_path)
+
+            # Procesează fiecare fereastră
+            for i in range(num_steps):
                 task = get_task_status(process_id)
                 if task and task.get('status') == 'cancelled':
-                    print(f"Task {process_id} anulat în timpul procesării chunks.")
                     return None
 
-                start_chunk = chunk_idx * chunk_duration
-                length_chunk = min(chunk_duration, duration - start_chunk)
+                start_window = i * step_duration
+                if start_window >= duration:
+                    break
 
-                # Evită chunk-uri insignifiante
-                if length_chunk < 0.1:
+                length_window = min(window_duration, duration - start_window)
+                if length_window < 0.5:
                     continue
 
-                progress_val = 15 + int((chunk_idx / total_chunks) * 60)
-                msg = f"Transcriere: chunk {chunk_idx + 1}/{total_chunks}"
+                # Verifică dacă există vorbire în această fereastră folosind VAD
+                if vad_segments:
+                    window_has_speech = False
+                    for vs in vad_segments:
+                        if (vs['start'] < start_window + length_window) and (vs['end'] > start_window):
+                            window_has_speech = True
+                            break
+                    if not window_has_speech:
+                        continue
+
+                progress_val = 15 + int((i / num_steps) * 60)
+                msg = f"Transcriere (interleaved): {i + 1}/{num_steps}"
                 update_task_status(process_id, 'processing', progress_val, msg)
 
-                print(f"Procesez chunk {chunk_idx + 1}/{total_chunks} ({start_chunk:.1f}s - {start_chunk + length_chunk:.1f}s)")
+                # Extrage audio window
+                audio_chunk_path = os.path.join(audio_chunks_dir, f'chunk_{i:04d}.wav')
 
-                # Extrage audio chunk ca WAV
-                audio_chunk_path = os.path.join(audio_chunks_dir, f'chunk_{chunk_idx:03d}.wav')
+                # Încarcă și normalizează segmentul (tehnică din Fish Speech Exporter/TTS Preparator)
+                try:
+                    # Folosim torchaudio pentru a citi exact segmentul dorit
+                    waveform, sample_rate = torchaudio.load(full_audio_path, frame_offset=int(start_window * 16000), num_frames=int(length_window * 16000))
 
-                cmd = [
-                    'ffmpeg',
-                    '-i', full_audio_path,
-                    '-ss', str(start_chunk),
-                    '-t', str(length_chunk),
-                    '-acodec', 'pcm_s16le',
-                    '-y',
-                    audio_chunk_path
-                ]
+                    # Normalizare RMS (din codul sursă furnizat)
+                    rms = torch.sqrt(torch.mean(waveform ** 2))
+                    if rms > 0:
+                        waveform = waveform * (0.1 / rms)
+                        waveform = torch.clamp(waveform, -1.0, 1.0)
 
-                subprocess.run(cmd, check=True, capture_output=True)
+                    # Salvează chunk-ul normalizat
+                    torchaudio.save(audio_chunk_path, waveform, sample_rate)
+                except Exception as e:
+                    print(f"Eroare la extragerea/normalizarea segmentului {i} cu torchaudio: {e}")
+                    # Fallback la ffmpeg dacă torchaudio eșuează
+                    cmd = [
+                        'ffmpeg', '-ss', str(start_window), '-t', str(length_window),
+                        '-i', full_audio_path, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', '-y', audio_chunk_path
+                    ]
+                    subprocess.run(cmd, check=True, capture_output=True)
 
-                # Transcrie chunk-ul cu validare
-                chunk_result = None
                 if os.path.exists(audio_chunk_path) and os.path.getsize(audio_chunk_path) > 100:
                     try:
-                        # Verifică durata chunk-ului
-                        chunk_dur = get_video_duration(audio_chunk_path)
-                        if chunk_dur and chunk_dur > 0.1:
-                            transcribe_kwargs = {
-                                'task': 'transcribe',
-                                'fp16': (device == "cuda")
-                            }
-                            if language != 'auto':
-                                transcribe_kwargs['language'] = language
+                        transcribe_kwargs = {
+                            'task': 'transcribe',
+                            'fp16': (device == "cuda")
+                        }
+                        if language != 'auto':
+                            transcribe_kwargs['language'] = language
 
-                            chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
-                        else:
-                            print(f"Chunk {chunk_idx} prea scurt: {chunk_dur}s")
+                        chunk_result = model.transcribe(audio_chunk_path, **transcribe_kwargs)
+
+                        if i == 0 and language == 'auto':
+                            detected_language = chunk_result.get('language', 'en')
+
+                        for seg in chunk_result.get('segments', []):
+                            seg['start'] += start_window
+                            seg['end'] += start_window
+                            seg['text'] = filter_hallucinations(seg['text'])
+                            if seg['text'].strip():
+                                all_raw_segments.append(seg)
                     except Exception as e:
-                        print(f"Eroare la verificarea/transcrierea chunk {chunk_idx}: {str(e)}")
+                        print(f"Eroare la procesarea ferestrei {i}: {str(e)}")
 
-                if not chunk_result:
-                    # Dacă chunk-ul e invalid sau Whisper a eșuat, trecem peste el
-                    if os.path.exists(audio_chunk_path):
-                        os.remove(audio_chunk_path)
-                    continue
+                if os.path.exists(audio_chunk_path):
+                    os.remove(audio_chunk_path)
 
-                # Capture detected language from the first chunk if in auto mode
-                if chunk_idx == 0 and language == 'auto':
-                    detected_language = chunk_result.get('language', 'en')
-                    print(f"Limbă detectată de Whisper: {detected_language}")
+            # Merging logic: "Best variant" based on logprob
+            final_segments = []
+            if all_raw_segments:
+                # Sortăm după timp
+                all_raw_segments.sort(key=lambda x: x['start'])
 
-                chunk_segments = chunk_result.get('segments', [])
+                for seg in all_raw_segments:
+                    is_duplicate = False
+                    for existing in final_segments:
+                        # Calculăm suprapunerea
+                        overlap_start = max(seg['start'], existing['start'])
+                        overlap_end = min(seg['end'], existing['end'])
+                        overlap_dur = max(0, overlap_end - overlap_start)
 
-                if not chunk_segments:
-                    continue
+                        seg_dur = seg['end'] - seg['start']
+                        existing_dur = existing['end'] - existing['start']
+                        min_dur = min(seg_dur, existing_dur)
 
-                # Ajustează timpii segmentelor
-                for seg in chunk_segments:
-                    seg['start'] += start_chunk
-                    seg['end'] += start_chunk
-                    all_segments.append(seg)
+                        # Dacă se suprapun semnificativ (>60%)
+                        if min_dur > 0 and (overlap_dur / min_dur) > 0.6:
+                            is_duplicate = True
+                            # Păstrăm varianta cu logprob mai mare (mai sigură)
+                            if seg.get('avg_logprob', -1e9) > existing.get('avg_logprob', -1e9):
+                                existing['text'] = seg['text']
+                                existing['avg_logprob'] = seg.get('avg_logprob')
+                            break
 
-                # Curăță chunk-ul audio
-                os.remove(audio_chunk_path)
+                    if not is_duplicate:
+                        final_segments.append(seg)
 
-            # Procesează segmentele combinate
-            segments = sorted(all_segments, key=lambda x: x['start'])
+            # Post-procesare: deduplicare și sortare
+            merged_segments = deduplicate_segments(final_segments)
+            merged_segments.sort(key=lambda x: x['start'])
 
             if should_adjust_segmentation:
-                segments = adjust_segmentation_algorithm(segments)
+                merged_segments = adjust_segmentation_algorithm(merged_segments)
 
             return {
-                'result': {'text': " ".join([s['text'] for s in segments]), 'language': detected_language},
-                'segments': segments,
+                'result': {
+                    'text': filter_hallucinations(" ".join([s['text'] for s in merged_segments])),
+                    'language': detected_language
+                },
+                'segments': merged_segments,
                 'transcribe_time': 0
             }
 
@@ -1588,7 +2376,8 @@ def chunk_upload_status(session_id):
         return jsonify({'error': f'Eroare: {str(e)}'}), 500
 
 def background_processing_task(original_path, model_name, language, translation_target,
-                             should_adjust_segmentation, process_id, extract_audio_only, original_filename):
+                             should_adjust_segmentation, process_id, extract_audio_only, original_filename,
+                             translation_engine='transformers', translation_instructions=None):
     """Task de procesare care rulează în background"""
     try:
         update_task_status(process_id, 'processing', 5, 'Inițializare procesare...')
@@ -1639,10 +2428,10 @@ def background_processing_task(original_path, model_name, language, translation_
         translation_used = None
 
         if translation_target and translation_target != detected_language:
-            update_task_status(process_id, 'processing', 90, f'Traducere în {translation_target}...')
+            update_task_status(process_id, 'processing', 90, f'Traducere în {translation_target} ({translation_engine})...')
             translation_start = time.time()
             try:
-                translated = translate_segments(segments, detected_language, translation_target)
+                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions)
                 translation_time = time.time() - translation_start
                 for i, segment in enumerate(translated):
                     translated_segments.append({
@@ -1670,8 +2459,10 @@ def background_processing_task(original_path, model_name, language, translation_
         video_preview_url = None
         image_preview_url = None
         is_video = any(original_path.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mov', '.mkv', '.mxf', '.m4v', '.webm', '.flv', '.wmv'])
+        duration = 0
 
         if is_video:
+            duration = get_video_duration(original_path)
             update_task_status(process_id, 'processing', 95, 'Pregătire preview...')
             try:
                 # Extrage imagine preview (JPG)
@@ -1697,6 +2488,7 @@ def background_processing_task(original_path, model_name, language, translation_
             'language_used': detected_language,
             'translation_used': translation_used,
             'is_translated': bool(translation_used),
+            'translation_target': translation_used,
             'process_id': process_id,
             'video_preview_url': video_preview_url,
             'image_preview_url': image_preview_url,
@@ -1705,7 +2497,9 @@ def background_processing_task(original_path, model_name, language, translation_
             'original_format': original_path.rsplit('.', 1)[-1].lower() if '.' in original_path else 'unknown',
             'model_used': model_name,
             'processing_time': 'Finalizat',
-            'translation_time': f"{translation_time:.1f}s" if translation_time else None
+            'translation_time': f"{translation_time:.1f}s" if translation_time else None,
+            'total_duration': segments[-1]['end'] if segments else 0,
+            'video_duration': duration if is_video else None
         }
 
         update_task_status(process_id, 'completed', 100, 'Procesare finalizată!', final_result)
@@ -1747,7 +2541,9 @@ def chunk_upload_process(session_id):
             data.get('adjust_segmentation', True),
             process_id,
             data.get('extract_audio_only', False),
-            session_info['file_name']
+            session_info['file_name'],
+            data.get('translation_engine', 'transformers'),
+            data.get('translation_instructions')
         ))
         thread.start()
 
@@ -1794,6 +2590,42 @@ def cancel_task(process_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/export_docx', methods=['POST'])
+def export_docx():
+    """Exportă subtitrările în format DOCX pentru traducători"""
+    try:
+        data = request.get_json()
+        process_id = data.get('process_id')
+        segments = data.get('segments')
+        metadata = {
+            'title': data.get('title'),
+            'series': data.get('series'),
+            'episode': data.get('episode'),
+            'translator': data.get('translator'),
+            'redactor': data.get('redactor'),
+            'max_chars': data.get('max_chars', 38),
+            'use_legacy': data.get('use_legacy', True),
+            'video_filename': data.get('video_filename', 'subtitrare')
+        }
+
+        if not process_id or not segments:
+            return jsonify({'error': 'Date insuficiente pentru export'}), 400
+
+        docx_filename = generate_docx_export(process_id, segments, metadata)
+
+        if docx_filename:
+            return jsonify({
+                'success': True,
+                'docx_filename': docx_filename,
+                'download_url': f'/download/{process_id}/{docx_filename}'
+            })
+        else:
+            return jsonify({'error': 'Eroare la generarea fișierului DOCX'}), 500
+
+    except Exception as e:
+        print(f"Eroare API export DOCX: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/save_edits', methods=['POST'])
 def save_edits():
     """Salvează modificările făcute în editorul de subtitrări"""
@@ -1838,6 +2670,7 @@ def save_edits():
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/get_existing_translations')
 def get_existing_translations():
@@ -2088,11 +2921,12 @@ def model_status():
         
         translation_status = {}
         for model_key in translation_models.keys():
+            m = translation_models[model_key]
             translation_status[model_key] = {
                 'loaded': True,
-                'device': translation_models[model_key]['device'],
-                'source': translation_models[model_key]['source'],
-                'target': translation_models[model_key]['target']
+                'device': m.get('device', 'cpu'),
+                'source': m.get('source', m.get('engine', 'unknown')),
+                'target': m.get('target', 'unknown')
             }
         
         system_info = {
@@ -2128,6 +2962,8 @@ def upload_file():
     model_name = request.form.get('model', session.get('selected_model', DEFAULT_MODEL))
     language = request.form.get('language', session.get('selected_language', 'auto'))
     translation_target = request.form.get('translation_target', session.get('translation_target', None))
+    translation_engine = request.form.get('translation_engine', 'transformers')
+    translation_instructions = request.form.get('translation_instructions', None)
     should_adjust_segmentation = request.form.get('adjust_segmentation', 'true').lower() == 'true'
     
     if model_name not in AVAILABLE_MODELS:
@@ -2197,7 +3033,7 @@ def upload_file():
             translation_start = time.time()
 
             try:
-                translated = translate_segments(segments, detected_language, translation_target)
+                translated = translate_segments(segments, detected_language, translation_target, engine=translation_engine, instructions=translation_instructions)
                 translation_time = time.time() - translation_start
 
                 for i, segment in enumerate(translated):
@@ -2431,7 +3267,7 @@ def api_translate_segments():
                 'text': seg.get('text', '')
             })
         
-        translated_segments = translate_segments(whisper_segments, source_lang, target_lang)
+        translated_segments = translate_segments(whisper_segments, source_lang, target_lang, engine=data.get('translation_engine', 'transformers'))
         
         formatted_segments = []
         for i, segment in enumerate(translated_segments):
@@ -2469,6 +3305,8 @@ def translate_existing():
     try:
         data = request.get_json()
         target_lang = data.get('target_lang')
+        engine = data.get('translation_engine', 'transformers')
+        instructions = data.get('translation_instructions')
         
         if not target_lang or target_lang not in TRANSLATION_LANGUAGES:
             return jsonify({'error': 'Limbă țintă invalidă'}), 400
@@ -2487,7 +3325,7 @@ def translate_existing():
                 'text': seg['text']
             })
         
-        translated_segments = translate_segments(whisper_segments, detected_language, target_lang)
+        translated_segments = translate_segments(whisper_segments, detected_language, target_lang, engine=engine, instructions=instructions)
         
         formatted_segments = []
         for i, segment in enumerate(translated_segments):

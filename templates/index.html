@@ -5,109 +5,101 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Transcriere Video/Audio în SRT cu Upload Segmentat</title>
     <style>
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --primary-light: #eef2ff;
+            --secondary: #64748b;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --bg-page: #f8fafc;
+            --bg-card: #ffffff;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --radius-lg: 16px;
+            --radius-md: 12px;
+            --radius-sm: 8px;
+            --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+            --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            --shadow-lg: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+        }
+
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
         
         body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background-color: var(--bg-page);
+            color: var(--text-main);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.5;
             min-height: 100vh;
-            padding: 20px;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            padding: 40px 20px;
         }
         
         .container {
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            background: var(--bg-card);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-lg);
             width: 100%;
             max-width: 1400px;
-            padding: 30px;
-            margin: 20px;
+            padding: 40px;
+            margin: 0 auto;
+            border: 1px solid var(--border);
         }
         
         h1 {
-            color: #333;
-            margin-bottom: 15px;
+            color: var(--text-main);
+            margin-bottom: 8px;
             text-align: center;
-            font-size: 2.2em;
-            font-weight: 300;
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: -0.025em;
         }
         
         .subtitle {
             text-align: center;
-            color: #666;
-            margin-bottom: 25px;
-            font-size: 1.1em;
+            color: var(--text-muted);
+            margin-bottom: 40px;
+            font-size: 1.1rem;
         }
         
-        /* Upload Method Selector */
-        .upload-method-selector {
-            background: #f0f9ff;
-            border-radius: 12px;
-            padding: 15px;
-            margin-bottom: 20px;
-            border: 2px solid #90cdf4;
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
         }
-        
-        .method-buttons {
+
+        .feature-item {
             display: flex;
-            gap: 15px;
-            margin-top: 10px;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            background: var(--primary-light);
+            border-radius: var(--radius-md);
+            color: var(--primary-dark);
+            font-weight: 600;
+            font-size: 0.9rem;
         }
-        
-        .method-btn {
-            flex: 1;
-            background: white;
-            border: 2px solid #e2e8f0;
-            border-radius: 10px;
-            padding: 15px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        
-        .method-btn:hover {
-            border-color: #667eea;
-            transform: translateY(-2px);
-        }
-        
-        .method-btn.active {
-            border-color: #667eea;
-            background: #f0f4ff;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-        
-        .method-icon {
-            font-size: 24px;
-            color: #667eea;
-            margin-bottom: 8px;
-        }
-        
-        .method-name {
-            font-weight: bold;
-            color: #4a5568;
-            margin-bottom: 5px;
-        }
-        
-        .method-desc {
-            color: #718096;
-            font-size: 0.85em;
+
+        .feature-item i {
+            font-size: 1.25rem;
         }
         
         /* Chunked Upload Progress */
         .chunked-upload-progress {
             display: none;
-            margin: 20px 0;
-            background: #f8f9ff;
-            border-radius: 12px;
-            padding: 20px;
-            border: 2px solid #e2e8f0;
+            margin: 24px 0;
+            background: var(--bg-page);
+            border-radius: var(--radius-lg);
+            padding: 32px;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-md);
         }
         
         .upload-progress-bar {
@@ -230,11 +222,12 @@
         
         /* Translation Panel */
         .translation-panel {
-            background: #f0f9ff;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-            border: 2px solid #90cdf4;
+            background: var(--bg-card);
+            border-radius: var(--radius-lg);
+            padding: 32px;
+            margin-bottom: 32px;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-sm);
             animation: fadeIn 0.5s;
         }
         
@@ -246,51 +239,61 @@
         }
         
         .translation-header h3 {
-            color: #2b6cb0;
+            color: var(--text-main);
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 12px;
             margin: 0;
+            font-size: 1.25rem;
+            font-weight: 700;
         }
         
         .translation-toggle {
-            background: #4299e1;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 20px;
+            background: var(--bg-page);
+            color: var(--text-muted);
+            border: 1px solid var(--border);
+            padding: 10px 20px;
+            border-radius: 9999px;
             cursor: pointer;
             display: flex;
             align-items: center;
             gap: 8px;
-            transition: all 0.3s;
+            transition: all 0.2s;
+            font-weight: 600;
+            font-size: 0.9rem;
         }
         
         .translation-toggle:hover {
-            background: #3182ce;
+            background: var(--primary-light);
+            border-color: var(--primary);
+            color: var(--primary-dark);
         }
         
         .translation-toggle.active {
-            background: #2b6cb0;
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
         }
         
         .translation-controls {
             display: grid;
-            grid-template-columns: 1fr auto;
-            gap: 15px;
-            align-items: center;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
         }
         
         .translation-selector {
             display: flex;
-            align-items: center;
-            gap: 10px;
+            flex-direction: column;
+            gap: 8px;
         }
         
         .translation-selector label {
-            color: #2b6cb0;
-            font-weight: 500;
-            white-space: nowrap;
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 0.85rem;
         }
         
         .translation-status {
@@ -342,42 +345,54 @@
         }
         
         .model-option {
-            background: white;
-            border: 2px solid #e2e8f0;
-            border-radius: 10px;
-            padding: 12px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 20px;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             position: relative;
+            box-shadow: var(--shadow-sm);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
         }
         
         .model-option:hover {
-            border-color: #667eea;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            border-color: var(--primary);
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-md);
         }
         
         .model-option.selected {
-            border-color: #667eea;
-            background: #f0f4ff;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: var(--primary);
+            background: var(--primary-light);
+            box-shadow: 0 0 0 2px var(--primary);
+        }
+
+        .model-option.selected .model-name {
+            color: var(--primary-dark);
         }
         
         .model-name {
-            font-weight: bold;
-            color: #4a5568;
-            font-size: 1.em;
-            margin-bottom: 5px;
+            font-weight: 800;
+            color: var(--text-main);
+            font-size: 1.1rem;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
         }
         
         .model-size {
-            color: #718096;
-            font-size: 0.85em;
-            background: #edf2f7;
-            padding: 2px 8px;
-            border-radius: 10px;
+            color: var(--primary-dark);
+            font-size: 0.75rem;
+            font-weight: 700;
+            background: var(--primary-light);
+            padding: 4px 10px;
+            border-radius: 9999px;
             display: inline-block;
-            margin-bottom: 6px;
+            margin-bottom: 12px;
+            align-self: flex-start;
         }
         
         .model-desc {
@@ -409,43 +424,67 @@
         }
         
         .settings-card {
-            background: #f8f9ff;
-            border-radius: 12px;
-            padding: 20px;
-            border: 2px solid #e2e8f0;
+            background: var(--bg-card);
+            border-radius: var(--radius-md);
+            padding: 24px;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-sm);
+            transition: box-shadow 0.2s;
+        }
+
+        .settings-card:hover {
+            box-shadow: var(--shadow-md);
         }
         
         .settings-card h3 {
-            color: #4a5568;
-            margin-bottom: 15px;
+            color: var(--text-main);
+            margin-bottom: 20px;
             display: flex;
             align-items: center;
-            gap: 8px;
-            font-size: 1.1em;
+            gap: 10px;
+            font-size: 1.1rem;
+            font-weight: 700;
         }
         
         .language-selector {
             display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-            align-items: center;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+
+        .language-selector label {
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 0.85rem;
         }
         
         select {
             flex: 1;
-            padding: 10px 15px;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            background: white;
-            color: #4a5568;
-            font-size: 0.95em;
+            padding: 12px 16px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg-card);
+            color: var(--text-main);
+            font-size: 0.95rem;
             cursor: pointer;
-            transition: border-color 0.3s;
+            transition: all 0.2s;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            background-size: 16px;
+            padding-right: 40px;
         }
         
-        select:hover, select:focus {
-            border-color: #667eea;
+        select:hover {
+            border-color: var(--primary);
+        }
+
+        select:focus {
+            border-color: var(--primary);
             outline: none;
+            box-shadow: 0 0 0 3px var(--primary-light);
         }
         
         .segmentation-controls {
@@ -512,20 +551,25 @@
         
         /* Upload Area */
         .upload-area {
-            border: 3px dashed #667eea;
-            border-radius: 15px;
-            padding: 40px 20px;
+            border: 2px dashed var(--primary);
+            border-radius: var(--radius-lg);
+            padding: 80px 40px;
             text-align: center;
-            margin-bottom: 20px;
+            margin-bottom: 24px;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             position: relative;
-            background: #f8f9ff;
+            background: var(--primary-light);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
         }
         
         .upload-area:hover {
-            background: #f0f2ff;
-            border-color: #764ba2;
+            background: #e0e7ff;
+            border-color: var(--primary-dark);
+            transform: translateY(-2px);
         }
         
         .upload-area.highlight {
@@ -577,11 +621,13 @@
         /* Video Preview Container */
         .video-preview-container {
             display: none;
-            margin-bottom: 20px;
-            background: #1a202c;
-            border-radius: 12px;
+            margin-bottom: 32px;
+            background: #000;
+            border-radius: var(--radius-lg);
             overflow: hidden;
+            box-shadow: var(--shadow-lg);
             animation: fadeIn 0.5s;
+            border: 1px solid var(--border);
         }
         
         .video-wrapper {
@@ -648,8 +694,8 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 15px;
-            background: #2d3748;
+            padding: 20px 24px;
+            background: #0f172a;
             color: white;
         }
         
@@ -731,11 +777,12 @@
         }
         
         .preview-segment {
-            background: white;
+            background: var(--bg-card);
             margin: 8px 0;
-            padding: 12px;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
+            padding: 16px;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--primary);
         }
         
         .preview-segment-header {
@@ -849,23 +896,26 @@
         
         /* Buttons */
         .btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--primary);
             color: white;
             border: none;
-            padding: 12px 30px;
-            font-size: 1em;
-            border-radius: 50px;
+            padding: 12px 28px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            border-radius: var(--radius-sm);
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: all 0.2s;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
+            gap: 10px;
+            box-shadow: var(--shadow-sm);
         }
         
         .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
         }
         
         .btn:disabled {
@@ -943,67 +993,145 @@
             from { opacity: 0; }
             to { opacity: 1; }
         }
+
+        .result-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 40px;
+            margin-top: 40px;
+            align-items: start;
+        }
+
+        .video-column {
+            position: sticky;
+            top: 20px;
+        }
+
+        .editor-column {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
         
         .segments {
-            max-height: 400px;
+            max-height: 800px;
             overflow-y: auto;
-            margin: 15px 0;
-            border: 1px solid #eee;
+            margin: 0;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 24px;
+            background: var(--bg-page);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            scrollbar-width: thin;
+            scrollbar-color: var(--primary) var(--bg-page);
+        }
+
+        .segments::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .segments::-webkit-scrollbar-thumb {
+            background-color: var(--primary);
             border-radius: 10px;
-            padding: 15px;
         }
         
         .segment {
-            background: #f8f9ff;
-            margin: 8px 0;
-            padding: 12px;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-            transition: all 0.3s;
+            background: var(--bg-card);
+            margin: 0 0 12px 0;
+            padding: 20px;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--border);
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
         }
         
+        .segment:hover {
+            border-color: var(--primary);
+            box-shadow: var(--shadow-md);
+        }
+
         .segment.highlighted {
-            background: #e6fffa !important;
-            border-left: 4px solid #48bb78 !important;
+            background: var(--primary-light) !important;
+            border-left-color: var(--primary) !important;
+            border-color: var(--primary) !important;
+            transform: translateX(4px);
+            box-shadow: var(--shadow-md);
         }
         
         .segment-header {
             display: flex;
             justify-content: space-between;
-            color: #667eea;
-            font-weight: bold;
-            margin-bottom: 5px;
-            font-size: 0.85em;
+            align-items: center;
+            color: var(--primary);
+            font-weight: 700;
+            margin-bottom: 12px;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
         
         .segment-text {
-            color: #333;
-            line-height: 1.4;
+            color: var(--text-main);
+            line-height: 1.6;
+            font-size: 1rem;
+            padding: 8px;
+            border-radius: var(--radius-sm);
+            transition: background 0.2s;
+            outline: none;
+            border: 1px solid transparent;
+        }
+
+        .segment-text:focus {
+            background: var(--bg-page);
+            border-color: var(--border);
         }
         
         .full-text {
-            background: #f8f9ff;
-            padding: 15px;
-            border-radius: 10px;
-            margin: 15px 0;
-            line-height: 1.6;
-            max-height: 200px;
+            background: var(--bg-page);
+            padding: 24px;
+            border-radius: var(--radius-md);
+            margin-bottom: 24px;
+            line-height: 1.7;
+            max-height: 180px;
             overflow-y: auto;
+            border: 1px solid var(--border);
+            font-size: 0.95rem;
+            color: var(--text-main);
+            box-shadow: inset 0 2px 4px 0 rgb(0 0 0 / 0.05);
+            position: relative;
+        }
+
+        .full-text::before {
+            content: "TEXT COMPLET";
+            position: sticky;
+            top: -24px;
+            display: block;
+            font-size: 0.7rem;
+            font-weight: 800;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            background: var(--bg-page);
+            padding: 4px 0;
+            letter-spacing: 0.05em;
         }
         
         /* System Info */
         .system-info {
-            background: #e6fffa;
-            border-radius: 10px;
-            padding: 12px;
-            margin: 15px 0;
-            font-size: 0.85em;
-            color: #234e52;
+            background: var(--bg-page);
+            border-radius: var(--radius-md);
+            padding: 16px 24px;
+            margin-bottom: 32px;
+            font-size: 0.85rem;
+            color: var(--text-muted);
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 10px;
+            gap: 24px;
+            border: 1px solid var(--border);
         }
         
         .info-item {
@@ -1030,12 +1158,14 @@
         }
         
         .status-badge {
-            background: #667eea;
+            background: var(--primary);
             color: white;
             padding: 4px 12px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 0.85em;
+            border-radius: 9999px;
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
         }
         
         /* Errors and Preview */
@@ -1329,6 +1459,15 @@
                 flex-direction: column;
             }
             
+            .result-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .video-column {
+                position: relative;
+                top: 0;
+            }
+
             .btn {
                 width: 100%;
             }
@@ -1368,8 +1507,27 @@
 </head>
 <body>
     <div class="container">
-        <h1><i class="fas fa-closed-captioning"></i> Transcriere Video/Audio cu Upload Segmentat</h1>
-        <p class="subtitle">Suportă fișiere mari până la 50GB • Upload în bucăți • Procesare optimizată</p>
+        <h1><i class="fas fa-closed-captioning"></i> Transcriere Inteligenta</h1>
+        <p class="subtitle">Sistem profesional de subtitrare și traducere automată</p>
+
+        <div class="feature-grid">
+            <div class="feature-item">
+                <i class="fas fa-bolt"></i>
+                <span>Procesare Ultra-Rapidă</span>
+            </div>
+            <div class="feature-item">
+                <i class="fas fa-shield-alt"></i>
+                <span>Upload Securizat 50GB</span>
+            </div>
+            <div class="feature-item">
+                <i class="fas fa-language"></i>
+                <span>Traducere AI Premium</span>
+            </div>
+            <div class="feature-item">
+                <i class="fas fa-magic"></i>
+                <span>Corecție Automată</span>
+            </div>
+        </div>
         
         <!-- System Info -->
         <div class="system-info" id="systemInfo">
@@ -1392,7 +1550,7 @@
         </div>
 
         <!-- Upload and Main Controls (Moved Higher) -->
-        <div style="background: #fff; border-radius: 15px; padding: 20px; margin-bottom: 25px; border: 2px solid #667eea; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.1);">
+        <div style="background: var(--bg-card); border-radius: var(--radius-lg); padding: 32px; margin-bottom: 32px; border: 1px solid var(--border); box-shadow: var(--shadow-md);">
             <div class="upload-area" id="uploadArea">
                 <div class="upload-icon"><i class="fas fa-file-upload"></i></div>
                 <div class="upload-text" id="uploadText">Trage și plasează fișierul aici sau click pentru a selecta</div>
@@ -1511,6 +1669,21 @@
                         <!-- Languages will be populated by JavaScript -->
                     </select>
                 </div>
+
+                <div class="translation-selector" style="margin-top: 10px;">
+                    <label for="translationEngineSelect"><i class="fas fa-microchip"></i> Engine:</label>
+                    <select id="translationEngineSelect">
+                        <option value="transformers">Transformers (Rapid)</option>
+                        <option value="gemma">LLM Gemma 12B (Best)</option>
+                        <option value="mistral">LLM Mistral (Precise)</option>
+                    </select>
+                </div>
+
+                <div class="translation-selector" style="grid-column: span 2; margin-top: 10px;">
+                    <label for="translationInstructions"><i class="fas fa-comment-dots"></i> Instrucțiuni speciale (Prompt):</label>
+                    <textarea id="translationInstructions" placeholder="Ex: Tradu într-un stil informal. Nu traduce numele proprii. Păstrează tonul dramatic."
+                              style="width: 100%; min-height: 80px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: inherit; font-size: 0.9rem; resize: vertical;"></textarea>
+                </div>
                 
                 <div class="translation-status" id="translationStatus">
                     <i class="fas fa-sync-alt fa-spin"></i>
@@ -1536,6 +1709,60 @@
                 </div>
             </div>
             
+            <!-- Translator Mode -->
+            <div class="settings-card" id="translatorCard">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h3 style="margin: 0;"><i class="fas fa-file-word"></i> Mod Traducător</h3>
+                    <input type="checkbox" id="translatorModeToggle" style="width: 24px; height: 24px;">
+                </div>
+
+                <div id="translatorSettings" style="display: none; flex-direction: column; gap: 15px;">
+                    <div class="language-selector">
+                        <label>Titlu Serial / Film:</label>
+                        <input type="text" id="serialTitle" placeholder="Ex: INIMĂ SĂLBATICĂ"
+                               style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div class="language-selector">
+                            <label>Seria:</label>
+                            <input type="text" id="seriesNumber" placeholder="Ex: 2"
+                                   style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                        </div>
+                        <div class="language-selector">
+                            <label>Episodul:</label>
+                            <input type="text" id="episodeNumber" placeholder="Ex: 3"
+                                   style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                        </div>
+                    </div>
+
+                    <div class="language-selector">
+                        <label>Traducător (Nume Prenume):</label>
+                        <input type="text" id="translatorName" placeholder="Numele tău"
+                               style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                    </div>
+
+                    <div class="language-selector">
+                        <label>Redactor (Nume Prenume):</label>
+                        <input type="text" id="redactorName" placeholder="Nume redactor"
+                               style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+                    </div>
+
+                    <div class="control-group">
+                        <label>
+                            <span>Caractere / rând (docx):</span>
+                            <span class="control-value" id="docxMaxCharsValue">38</span>
+                        </label>
+                        <input type="range" id="docxMaxChars" min="30" max="60" step="1" value="38">
+                    </div>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="useLegacyDiacritics" checked>
+                        <label for="useLegacyDiacritics">Folosește diacritice Legacy (ş, ţ)</label>
+                    </div>
+                </div>
+            </div>
+
             <!-- Language & Segmentation -->
             <div class="settings-card">
                 <h3><i class="fas fa-language"></i> Setări Limbă și Segmentare</h3>
@@ -1655,14 +1882,26 @@
                 <p>Se încarcă traducerile existente...</p>
             </div>
             
-            <div class="new-translation-controls">
-                <select id="newTranslationSelect">
-                    <option value="">-- Alege o limbă nouă --</option>
-                    <!-- Languages will be populated by JavaScript -->
-                </select>
-                <button class="btn" onclick="addNewTranslation()" id="addTranslationBtn">
-                    <i class="fas fa-plus"></i> Adaugă Traducere
-                </button>
+            <div class="new-translation-controls" style="display: flex; flex-direction: column; gap: 15px;">
+                <div style="display: flex; gap: 10px; width: 100%;">
+                    <select id="newTranslationSelect" style="flex: 1;">
+                        <option value="">-- Alege o limbă nouă --</option>
+                        <!-- Languages will be populated by JavaScript -->
+                    </select>
+                    <select id="newTranslationEngineSelect" style="max-width: 150px;">
+                        <option value="transformers">Transformers</option>
+                        <option value="gemma">Gemma 12B LLM</option>
+                        <option value="mistral">Mistral LLM</option>
+                    </select>
+                    <button class="btn" onclick="addNewTranslation()" id="addTranslationBtn">
+                        <i class="fas fa-plus"></i> Adaugă Traducere
+                    </button>
+                </div>
+                <div style="width: 100%;">
+                    <label style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 5px;">Instrucțiuni pentru această traducere:</label>
+                    <textarea id="newTranslationInstructions" placeholder="Instrucțiuni specifice (prompt)..."
+                              style="width: 100%; min-height: 60px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: inherit; font-size: 0.85rem; resize: vertical;"></textarea>
+                </div>
             </div>
         </div>
         
@@ -1715,49 +1954,67 @@
         
         <!-- Results -->
         <div class="result-container" id="resultContainer">
-            <h2 id="resultTitle"><i class="fas fa-check-circle"></i> Transcriere finalizată!</h2>
+            <h2 id="resultTitle" style="text-align: center; font-size: 2.25rem; margin-bottom: 48px; color: var(--success); font-weight: 800; letter-spacing: -0.025em;">
+                <i class="fas fa-check-circle"></i> Transcriere finalizată!
+            </h2>
 
-            <div id="audioOnlyResult" style="display: none; text-align: center; margin: 20px 0;">
-                <div class="info-card" style="display: inline-block; margin-bottom: 20px;">
-                    <p><i class="fas fa-volume-up"></i> Audio-ul a fost extras cu succes. Fișierul video original a fost șters pentru a economisi spațiu.</p>
+            <div id="audioOnlyResult" style="display: none; text-align: center; margin: 32px 0;">
+                <div class="info-card" style="display: inline-block; margin-bottom: 32px; padding: 24px; border-radius: var(--radius-lg);">
+                    <p style="font-size: 1.1rem;"><i class="fas fa-volume-up" style="color: var(--primary);"></i> Audio-ul a fost extras cu succes. Fișierul video original a fost șters pentru a economisi spațiu.</p>
                 </div>
                 <div class="button-group">
-                    <a id="audioDownloadLink" href="#" class="btn download-btn">
+                    <a id="audioDownloadLink" href="#" class="btn download-btn" style="padding: 16px 32px; font-size: 1.1rem;">
                         <i class="fas fa-download"></i> Descarcă Audio (MP3)
                     </a>
                 </div>
             </div>
 
             <div id="transcriptionResult">
-                <!-- Translation Toggle in Results -->
-            <div style="margin: 15px 0; display: flex; justify-content: center; gap: 10px;">
-                <button class="segment-translation-toggle" id="toggleSegmentsTranslation" onclick="toggleSegmentsTranslation()">
-                    <i class="fas fa-language"></i> Afișează Traducerea
-                </button>
-                <button class="segment-translation-toggle" onclick="showMultipleTranslations()" id="showMultipleTranslationsBtn">
-                    <i class="fas fa-globe-europe"></i> Traduceri Multiplă
-                </button>
-                <button class="segment-translation-toggle" onclick="downloadTranslatedSRT()" id="downloadTranslatedBtn" style="display: none;">
-                    <i class="fas fa-download"></i> Descarcă SRT Tradus
-                </button>
-            </div>
+                <div class="result-grid">
+                    <!-- Left: Video & Controls -->
+                    <div id="videoColumn" class="video-column">
+                        <!-- Video Preview will be moved here by JS if video exists -->
+                    </div>
+
+                    <!-- Right: Editor -->
+                    <div id="editorColumn" class="editor-column">
+                        <div style="display: flex; justify-content: center; gap: 12px; flex-wrap: wrap;">
+                            <button class="segment-translation-toggle" id="toggleSegmentsTranslation" onclick="toggleSegmentsTranslation()">
+                                <i class="fas fa-language"></i> Afișează Traducerea
+                            </button>
+                            <button class="segment-translation-toggle" onclick="showMultipleTranslations()" id="showMultipleTranslationsBtn">
+                                <i class="fas fa-globe-europe"></i> Traduceri Multiplă
+                            </button>
+                        </div>
+
+                        <div class="full-text" id="fullText"></div>
+
+                        <div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding: 0 4px;">
+                                <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--text-muted);">SEGMENTE EDITABILE</h3>
+                                <button class="btn btn-secondary" onclick="copyAllText()" style="padding: 6px 12px; font-size: 0.75rem;">
+                                    <i class="fas fa-copy"></i> Copiază Tot
+                                </button>
+                            </div>
+                            <div class="segments" id="segmentsList"></div>
+                        </div>
+                    </div>
+                </div>
             
-            <div class="full-text" id="fullText"></div>
-            
-            <h3><i class="fas fa-list"></i> Segmente cu timecode:</h3>
-            <div class="segments" id="segmentsList"></div>
-            
-            <div id="transcriptionButtons" class="button-group">
-                <button class="btn" id="saveEditsBtn" onclick="saveEdits()" style="background: #805ad5;">
+            <div id="transcriptionButtons" class="button-group" style="margin-top: 48px; padding-top: 32px; border-top: 1px solid var(--border);">
+                <button class="btn" id="saveEditsBtn" onclick="saveEdits()" style="background: var(--primary); min-width: 220px;">
                     <i class="fas fa-save"></i> Salvează Modificările
                 </button>
-                <button class="btn download-btn" onclick="downloadSRT()">
+                <button class="btn download-btn" onclick="downloadSRT()" style="min-width: 220px;">
                     <i class="fas fa-download"></i> Descarcă Fișier SRT
                 </button>
-                <button class="btn download-btn" onclick="downloadTranslatedSRT()" id="mainDownloadTranslatedBtn" style="display: none;">
+                <button class="btn download-btn" onclick="downloadTranslatedSRT()" id="mainDownloadTranslatedBtn" style="display: none; min-width: 220px; background: var(--primary-dark);">
                     <i class="fas fa-language"></i> Descarcă SRT Tradus
                 </button>
-                <button class="btn btn-secondary" onclick="playWithSubtitles()" id="playWithSubtitlesBtn">
+                <button class="btn" onclick="exportToDocx()" id="exportDocxBtn" style="display: none; min-width: 220px; background: #2b5797;">
+                    <i class="fas fa-file-word"></i> Descarcă DOCX
+                </button>
+                <button class="btn btn-secondary" onclick="playWithSubtitles()" id="playWithSubtitlesBtn" style="min-width: 220px;">
                     <i class="fas fa-film"></i> Play cu Subtitrări
                 </button>
             </div>
@@ -1872,7 +2129,6 @@
         const loadingTranslationInfo = document.getElementById('loadingTranslationInfo');
         const processingChunksInfo = document.getElementById('processingChunksInfo');
         const toggleSegmentsTranslationBtn = document.getElementById('toggleSegmentsTranslation');
-        const downloadTranslatedBtn = document.getElementById('downloadTranslatedBtn');
         const mainDownloadTranslatedBtn = document.getElementById('mainDownloadTranslatedBtn');
         const multipleTranslationsPanel = document.getElementById('multipleTranslationsPanel');
         const translationsListContainer = document.getElementById('translationsListContainer');
@@ -1880,6 +2136,11 @@
         const addTranslationBtn = document.getElementById('addTranslationBtn');
         const showMultipleTranslationsBtn = document.getElementById('showMultipleTranslationsBtn');
         const saveEditsBtn = document.getElementById('saveEditsBtn');
+        const translatorModeToggle = document.getElementById('translatorModeToggle');
+        const translatorSettings = document.getElementById('translatorSettings');
+        const docxMaxChars = document.getElementById('docxMaxChars');
+        const docxMaxCharsValue = document.getElementById('docxMaxCharsValue');
+        const exportDocxBtn = document.getElementById('exportDocxBtn');
         
         // Elemente pentru upload segmentat
         const chunkedUploadProgress = document.getElementById('chunkedUploadProgress');
@@ -1942,6 +2203,18 @@
             // Încarcă limbile pentru traduceri multiple
             loadNewTranslationLanguages();
             
+            // Event listeners pentru Mod Traducător
+            translatorModeToggle.addEventListener('change', function() {
+                translatorSettings.style.display = this.checked ? 'flex' : 'none';
+                if (processId && currentSegments.length > 0) {
+                    exportDocxBtn.style.display = this.checked ? 'inline-flex' : 'none';
+                }
+            });
+
+            docxMaxChars.addEventListener('input', function() {
+                docxMaxCharsValue.textContent = this.value;
+            });
+
             // Event listeners pentru video
             videoPreview.addEventListener('timeupdate', function() {
                 const currentTime = videoPreview.currentTime;
@@ -2914,6 +3187,8 @@
                         model: currentModel,
                         language: currentLanguage,
                         translation_target: translationTarget || '',
+                        translation_engine: document.getElementById('translationEngineSelect').value,
+                    translation_instructions: document.getElementById('translationInstructions').value,
                         adjust_segmentation: adjustSegmentationCheckbox.checked,
                         extract_audio_only: extractAudioOnlyCheckbox.checked
                     })
@@ -3112,7 +3387,6 @@
                 
                 // Afișează butoanele pentru traducere
                 toggleSegmentsTranslationBtn.style.display = 'inline-flex';
-                downloadTranslatedBtn.style.display = 'inline-flex';
                 mainDownloadTranslatedBtn.style.display = 'inline-flex';
                 
                 // Actualizează numele fișierului tradus
@@ -3123,7 +3397,6 @@
                 
                 // Ascunde butoanele pentru traducere
                 toggleSegmentsTranslationBtn.style.display = 'none';
-                downloadTranslatedBtn.style.display = 'none';
                 mainDownloadTranslatedBtn.style.display = 'none';
             }
             
@@ -3131,6 +3404,12 @@
             
             // Actualizează video preview dacă există
             if (data.is_video) {
+                // Mutăm containerul video în coloana din stânga a rezultatelor
+                const videoCol = document.getElementById('videoColumn');
+                if (videoCol) {
+                    videoCol.appendChild(videoPreviewContainer);
+                }
+
                 if (videoPreviewUrl) {
                     console.log('Setting video preview src:', videoPreviewUrl);
                     // Adăugăm un timestamp pentru a forța reîncărcarea prin tunnel/cache
@@ -3177,8 +3456,62 @@
                 
                 // Arată butonul pentru traduceri multiple
                 showMultipleTranslationsBtn.style.display = 'inline-flex';
+
+                // Arată butonul DOCX dacă suntem în mod traducător
+                if (translatorModeToggle.checked) {
+                    exportDocxBtn.style.display = 'inline-flex';
+                }
             }, 500);
         }
+
+        // Exportă în format DOCX
+        async function exportToDocx() {
+            if (!processId || !currentSegments.length) {
+                showToast('Nu există date pentru export', 'warning');
+                return;
+            }
+
+            const originalBtnText = exportDocxBtn.innerHTML;
+            exportDocxBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Se generează...';
+            exportDocxBtn.disabled = true;
+
+            const metadata = {
+                process_id: processId,
+                segments: currentSegments,
+                title: document.getElementById('serialTitle').value,
+                series: document.getElementById('seriesNumber').value,
+                episode: document.getElementById('episodeNumber').value,
+                translator: document.getElementById('translatorName').value,
+                redactor: document.getElementById('redactorName').value,
+                max_chars: docxMaxChars.value,
+                use_legacy: document.getElementById('useLegacyDiacritics').checked,
+                video_filename: selectedFile ? selectedFile.name : 'subtitrare'
+            };
+
+            try {
+                const response = await fetch('/api/export_docx', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(metadata)
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast('Document DOCX generat cu succes!', 'success');
+                    window.open(data.download_url, '_blank');
+                } else {
+                    throw new Error(data.error || 'Eroare la export');
+                }
+            } catch (error) {
+                console.error('Eroare export DOCX:', error);
+                showToast(`Eroare la export: ${error.message}`, 'error');
+            } finally {
+                exportDocxBtn.innerHTML = originalBtnText;
+                exportDocxBtn.disabled = false;
+            }
+        }
+
         
         // Restul funcțiilor rămân la fel (displaySegments, toggleSegmentsTranslation, etc.)
         // ... (codul rămas este identic cu cel din versiunea anterioară)
@@ -3189,6 +3522,19 @@
             if (segment) {
                 segment.text = newText;
             }
+        }
+
+        function copyAllText() {
+            // Folosim segmentele curente pentru a include eventualele editări
+            const textToCopy = currentSegments.map(s => s.text).join(' ');
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                showToast('Text complet copiat în clipboard!', 'success');
+            }).catch(err => {
+                console.error('Error copying text:', err);
+                // Fallback la textul original dacă clipboard API eșuează
+                const fullText = document.getElementById('fullText').innerText;
+                navigator.clipboard.writeText(fullText);
+            });
         }
 
         // Salvează modificările pe server
@@ -3376,7 +3722,6 @@
                 displaySegments(originalSegments);
                 showToast('Se afișează segmentele originale', 'info');
 
-                downloadTranslatedBtn.style.display = 'none';
                 mainDownloadTranslatedBtn.style.display = 'none';
             } else {
                 try {
@@ -3402,7 +3747,6 @@
 
                     if (multipleTranslations[langCode].srt_filename) {
                         translatedSrtFilename = multipleTranslations[langCode].srt_filename;
-                        downloadTranslatedBtn.style.display = 'inline-flex';
                         mainDownloadTranslatedBtn.style.display = 'inline-flex';
                     }
 
@@ -3456,7 +3800,9 @@
                     },
                     body: JSON.stringify({
                         target_lang: targetLang,
-                        source_lang: langCode
+                        source_lang: langCode,
+                        translation_engine: document.getElementById('newTranslationEngineSelect').value,
+                        translation_instructions: document.getElementById('newTranslationInstructions').value
                     })
                 });
                 
@@ -3473,7 +3819,6 @@
                     refreshTranslationsList();
                     
                     // Afișează butoanele de descărcare pentru traducere
-                    downloadTranslatedBtn.style.display = 'inline-flex';
                     mainDownloadTranslatedBtn.style.display = 'inline-flex';
 
                     setTimeout(() => {
@@ -3495,12 +3840,14 @@
         function downloadTranslationSRT(langCode, event = null) {
             if (event) event.stopPropagation();
             
-            if (!multipleTranslations[langCode]) {
-                showToast(`Traducerea în ${langCode} nu există`, 'error');
+            const trans = multipleTranslations[langCode];
+            if (!trans || (!trans.srt_filename && !trans.filename)) {
+                showToast(`Nu s-a găsit fișierul pentru ${langCode}. Încearcă să o re-încarci.`, 'error');
                 return;
             }
             
-            showToast(`Descărcarea pentru ${langCode} va fi implementată în curând.`, 'info');
+            const filename = trans.srt_filename || trans.filename;
+            window.open(`/download/${processId}/${encodeURIComponent(filename)}`, '_blank');
         }
         
 
@@ -3722,6 +4069,13 @@
         function resetApp() {
             stopPlayback();
             
+            // Mutăm înapoi video preview în locul lui original
+            const originalVideoParent = document.querySelector('.container');
+            if (originalVideoParent && videoPreviewContainer) {
+                // Îl punem înainte de script dacă e posibil, sau la sfârșit
+                originalVideoParent.insertBefore(videoPreviewContainer, document.querySelector('script'));
+            }
+
             // Anulează task-ul activ dacă există
             if (processId) {
                 fetch(`/api/cancel_task/${processId}`, { method: 'POST' }).catch(console.error);
@@ -3777,14 +4131,22 @@
             toggleSegmentsTranslationBtn.innerHTML = '<i class="fas fa-language"></i> Afișează Traducerea';
             toggleSegmentsTranslationBtn.classList.remove('active');
             toggleSegmentsTranslationBtn.style.display = 'none';
-            downloadTranslatedBtn.style.display = 'none';
             document.getElementById('audioOnlyResult').style.display = 'none';
             document.getElementById('transcriptionResult').style.display = 'block';
             document.getElementById('transcriptionButtons').style.display = 'flex';
             document.getElementById('resultTitle').innerHTML = '<i class="fas fa-check-circle"></i> Transcriere finalizată!';
             mainDownloadTranslatedBtn.style.display = 'none';
+            exportDocxBtn.style.display = 'none';
             showMultipleTranslationsBtn.style.display = 'inline-flex';
             
+            // Reset Translator fields
+            document.getElementById('serialTitle').value = '';
+            document.getElementById('seriesNumber').value = '';
+            document.getElementById('episodeNumber').value = '';
+            document.getElementById('translatorName').value = '';
+            document.getElementById('redactorName').value = '';
+
+
             videoPreview.src = '';
             videoPreview.style.display = 'none';
             imagePreview.src = '';
